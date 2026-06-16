@@ -15,10 +15,8 @@ const CERTIFICATES = {
 };
 
 const defaultSettings = {
-  kitchenManagerEmail: "kitchen.manager@calo.app",
-  dispatchManagerEmail: "dispatch.manager@calo.app",
-  firstReminder: 90,
-  finalReminder: 30,
+  alertsEmail: "compliance.manager@calo.app",
+  reminderDays: 30,
 };
 
 let state = loadState();
@@ -124,7 +122,7 @@ certificateForm.addEventListener("submit", async (event) => {
 
   employee.certificates[type] = {
     issueDate: data.issueDate,
-    expiryDate: calculateExpiryDate(data.issueDate, CERTIFICATES[type].validYears),
+    expiryDate: data.expiryDate || calculateExpiryDate(data.issueDate, CERTIFICATES[type].validYears),
     file: uploadedFile,
     updatedAt: new Date().toISOString(),
   };
@@ -140,14 +138,12 @@ alertSettingsForm.addEventListener("submit", (event) => {
   event.preventDefault();
   const data = formData(event.currentTarget);
   state.settings = {
-    kitchenManagerEmail: data.kitchenManagerEmail.trim().toLowerCase(),
-    dispatchManagerEmail: data.dispatchManagerEmail.trim().toLowerCase(),
-    firstReminder: Number(data.firstReminder),
-    finalReminder: Number(data.finalReminder),
+    alertsEmail: data.alertsEmail.trim().toLowerCase(),
+    reminderDays: Number(data.reminderDays),
   };
   persist();
   render();
-  showToast("Alert settings saved.");
+  sendEmailAlert();
 });
 
 bulkUploadForm.addEventListener("submit", async (event) => {
@@ -169,8 +165,23 @@ statusFilter.addEventListener("change", renderCertificateRows);
 document.getElementById("seedDemo").addEventListener("click", seedDemoData);
 document.getElementById("exportExcel").addEventListener("click", exportExcel);
 document.getElementById("exportExcelTop").addEventListener("click", exportExcel);
-document.getElementById("prepareAllAlerts").addEventListener("click", prepareAllAlerts);
+document.getElementById("prepareAllAlerts").addEventListener("click", sendEmailAlert);
 document.getElementById("downloadEmployeeTemplate").addEventListener("click", downloadEmployeeTemplate);
+
+certificateForm.elements.issueDate.addEventListener("change", (event) => {
+  const issueDate = event.target.value;
+  const type = certificateForm.elements.type.value;
+  if (issueDate && type) {
+    certificateForm.elements.expiryDate.value = calculateExpiryDate(issueDate, CERTIFICATES[type].validYears);
+  }
+});
+certificateForm.elements.type.addEventListener("change", (event) => {
+  const issueDate = certificateForm.elements.issueDate.value;
+  const type = event.target.value;
+  if (issueDate && type) {
+    certificateForm.elements.expiryDate.value = calculateExpiryDate(issueDate, CERTIFICATES[type].validYears);
+  }
+});
 
 function loadState() {
   const saved = localStorage.getItem(STORAGE_KEY);
@@ -217,8 +228,8 @@ function normalizeSettings(settings = {}) {
   return {
     ...defaultSettings,
     ...settings,
-    kitchenManagerEmail: settings.kitchenManagerEmail || settings.managerEmail || defaultSettings.kitchenManagerEmail,
-    dispatchManagerEmail: settings.dispatchManagerEmail || defaultSettings.dispatchManagerEmail,
+    alertsEmail: settings.alertsEmail || settings.kitchenManagerEmail || defaultSettings.alertsEmail,
+    reminderDays: Number(settings.reminderDays || settings.finalReminder || defaultSettings.reminderDays),
   };
 }
 
@@ -379,7 +390,7 @@ function renderCertificateRows() {
     <td>${statusBadge(item.status)}</td>
     <td>${renderFileLink(item.record.file)}</td>
     <td class="row-actions">
-      <button class="text-btn" type="button" data-action="edit-certificate" data-employee-id="${item.employee.id}" data-type="${item.type}">Update</button>
+      <button class="text-btn" type="button" data-action="edit-certificate" data-employee-id="${item.employee.id}" data-type="${item.type}">Edit</button>
       <button class="text-btn danger" type="button" data-action="remove-certificate" data-employee-id="${item.employee.id}" data-type="${item.type}">Clear</button>
     </td>
   </tr>`);
@@ -389,10 +400,8 @@ function renderCertificateRows() {
 }
 
 function renderAlertSettings() {
-  alertSettingsForm.elements.kitchenManagerEmail.value = state.settings.kitchenManagerEmail;
-  alertSettingsForm.elements.dispatchManagerEmail.value = state.settings.dispatchManagerEmail;
-  alertSettingsForm.elements.firstReminder.value = String(state.settings.firstReminder);
-  alertSettingsForm.elements.finalReminder.value = String(state.settings.finalReminder);
+  alertSettingsForm.elements.alertsEmail.value = state.settings.alertsEmail;
+  alertSettingsForm.elements.reminderDays.value = String(state.settings.reminderDays);
 }
 
 function renderAlertQueue() {
@@ -500,49 +509,49 @@ function calculateExpiryDate(issueDate, years) {
 }
 
 function getAlertItems() {
-  const firstReminder = Number(state.settings.firstReminder);
-  const finalReminder = Number(state.settings.finalReminder);
+  const reminderDays = Number(state.settings.reminderDays);
   return getCertificateSummaries()
     .filter((item) => item.status !== "Missing")
-    .filter((item) => item.daysRemaining < 0 || item.daysRemaining <= firstReminder || item.daysRemaining <= finalReminder)
+    .filter((item) => item.daysRemaining < 0 || item.daysRemaining <= reminderDays)
     .sort((a, b) => a.daysRemaining - b.daysRemaining);
 }
 
-function prepareAllAlerts() {
+function sendEmailAlert() {
   const items = getAlertItems();
+  const email = state.settings.alertsEmail;
   if (!items.length) {
-    showToast("No alert emails are due.");
+    showToast("No certificate alerts are due for the selected reminder.");
     return;
   }
-  const kitchenItems = items.filter((item) => getAlertRoute(item.employee).type === "kitchen");
-  const dispatchItems = items.filter((item) => getAlertRoute(item.employee).type === "dispatch");
   const subject = encodeURIComponent(`UAE Kitchen certificate alerts - ${items.length} items`);
   const body = encodeURIComponent(
     [
-      "Kitchen alerts",
-      kitchenItems.length
-        ? kitchenItems
-            .map((item) => `${item.employee.name} (${item.employee.employeeId}) - ${item.certificate.label} expires ${formatDateOnly(item.expiryDate)} - ${item.status}`)
-            .join("\n")
-        : "No kitchen alerts.",
+      "Hello Compliance Team,",
       "",
-      "Dispatch alerts",
-      dispatchItems.length
-        ? dispatchItems
-            .map((item) => `${item.employee.name} (${item.employee.employeeId}) - ${item.certificate.label} expires ${formatDateOnly(item.expiryDate)} - ${item.status}`)
-            .join("\n")
-        : "No dispatch alerts.",
-    ].join("\n"),
+      `The following ${items.length} certificate renewal(s) need attention (due within ${state.settings.reminderDays} days or overdue):`,
+      "",
+      items
+        .map(
+          (item) =>
+            `- ${item.employee.name} (${item.employee.employeeId}) - ${item.certificate.label}: ${item.status} (Expires: ${formatDateOnly(item.expiryDate)}, ${formatDays(item.daysRemaining)})`
+        )
+        .join("\n"),
+      "",
+      "Please arrange renewals and update the portal once the new certificate is issued.",
+      "",
+      "UAE Kitchen - Compliance Portal",
+    ].join("\n")
   );
-  window.location.href = `mailto:${encodeURIComponent(getAlertRecipients().join(","))}?subject=${subject}&body=${body}`;
+  window.location.href = `mailto:${encodeURIComponent(email)}?subject=${subject}&body=${body}`;
+  showToast("Opening mail client...");
 }
 
 function createMailto(item) {
-  const route = getAlertRoute(item.employee);
+  const email = state.settings.alertsEmail;
   const subject = encodeURIComponent(`${item.certificate.label} certificate ${item.status.toLowerCase()} - ${item.employee.name}`);
   const body = encodeURIComponent(
     [
-      `Hello ${route.label},`,
+      "Hello,",
       "",
       `${item.employee.name}'s ${item.certificate.fullName} (${item.certificate.label}) certificate is ${item.status.toLowerCase()}.`,
       `Employee ID: ${item.employee.employeeId}`,
@@ -553,21 +562,17 @@ function createMailto(item) {
       "Please arrange renewal and update the portal once the new certificate is issued.",
       "",
       "UAE Kitchen - Compliance Portal",
-    ].join("\n"),
+    ].join("\n")
   );
-  return `mailto:${encodeURIComponent(route.email)}?subject=${subject}&body=${body}`;
+  return `mailto:${encodeURIComponent(email)}?subject=${subject}&body=${body}`;
 }
 
 function getAlertRoute(employee) {
-  const department = employee.department.toLowerCase();
-  const isDispatch = department.includes("dispatch") || department.includes("delivery") || department.includes("logistics");
-  return isDispatch
-    ? { type: "dispatch", label: "Dispatch Alerts", email: state.settings.dispatchManagerEmail }
-    : { type: "kitchen", label: "Kitchen Alerts", email: state.settings.kitchenManagerEmail };
+  return { type: "alerts", label: "Compliance Email", email: state.settings.alertsEmail };
 }
 
 function getAlertRecipients() {
-  return [...new Set([state.settings.kitchenManagerEmail, state.settings.dispatchManagerEmail].filter(Boolean))];
+  return [state.settings.alertsEmail].filter(Boolean);
 }
 
 function getPainPoint(summaries) {
@@ -736,6 +741,7 @@ function editCertificate(employeeId, type) {
   certificateForm.elements.employeeId.value = employeeId;
   certificateForm.elements.type.value = type;
   certificateForm.elements.issueDate.value = employee.certificates[type]?.issueDate || "";
+  certificateForm.elements.expiryDate.value = employee.certificates[type]?.expiryDate || "";
   showView("certificates");
   certificateForm.elements.issueDate.focus();
 }
@@ -899,7 +905,7 @@ function seedDemoData() {
       id: crypto.randomUUID(),
       name: "Aisha Rahman",
       employeeId: "CK-1001",
-      department: "Production",
+      department: "Kitchen",
       position: "Line Supervisor",
       email: "aisha.rahman@countrykitchen.ae",
       phone: "+971 50 100 1001",
@@ -929,7 +935,7 @@ function seedDemoData() {
       id: crypto.randomUUID(),
       name: "Maria Santos",
       employeeId: "CK-1003",
-      department: "Quality Assurance",
+      department: "Kitchen",
       position: "QA Officer",
       email: "maria.santos@countrykitchen.ae",
       phone: "+971 50 100 1003",
@@ -944,7 +950,7 @@ function seedDemoData() {
       id: crypto.randomUUID(),
       name: "Omar Faris",
       employeeId: "CK-1004",
-      department: "Cold Kitchen",
+      department: "Kitchen",
       position: "Commis Chef",
       email: "omar.faris@countrykitchen.ae",
       phone: "+971 50 100 1004",
@@ -1015,6 +1021,14 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function csvEscape(value) {
+  const str = String(value ?? "");
+  if (str.includes(",") || str.includes('"') || str.includes("\n") || str.includes("\r")) {
+    return `"${str.replaceAll('"', '""')}"`;
+  }
+  return str;
 }
 
 function showToast(message) {
