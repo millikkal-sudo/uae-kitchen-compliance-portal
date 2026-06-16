@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>UAE Kitchen - Compliance Portal</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <section id="loginView" class="login-view">
+      <div class="login-bg"></div>
+      <div class="login-shadow"></div>
+      <div class="login-greenwash"></div>
+      <div class="login-panel">
+        <div class="login-brand">
+          <img src="assets/calo-logo.svg" alt="CALO" />
+          <span>UAE Kitchen Compliance</span>
+          <i></i>
+        </div>
+        <div class="login-copy">
+          <h1>Welcome back</h1>
+          <p>Sign in to manage BFS and OHC certificate renewals.</p>
+        </div>
+        <form id="loginForm" class="login-form">
+          <label>
+            Email address
+            <span class="input-icon">✉</span>
+            <input name="email" type="email" autocomplete="email" placeholder="****@calo.app" required />
+          </label>
+          <button class="login-submit" type="submit">
+            Sign In
+            <span>→</span>
+          </button>
+        </form>
+        <div class="login-footer">
+          <p>© 2026 CALO Food Company<br />UAE Kitchen - Compliance Portal</p>
+        </div>
+      </div>
+      <div class="login-locations">
+        <span>Dubai</span>
+        <span>UAE</span>
+        <span>UAE Kitchen</span>
+        <span>CALO</span>
+      </div>
+    </section>
+
+    <div id="appShell" class="app-shell hidden">
+      <aside class="sidebar">
+        <div class="brand-row app-brand">
+          <img src="assets/calo-logo.svg" alt="CALO" />
+          <div>
+            <strong>UAE Kitchen</strong>
+            <span>Certificate compliance</span>
+          </div>
+        </div>
+
+        <nav class="nav-tabs" aria-label="Main sections">
+          <button class="nav-tab active" data-view="dashboard" type="button">Dashboard</button>
+          <button class="nav-tab" data-view="employees" type="button">Employees</button>
+          <button class="nav-tab" data-view="certificates" type="button">Certificates</button>
+          <button class="nav-tab" data-view="alerts" type="button">Alerts</button>
+          <button class="nav-tab" data-view="reports" type="button">Reports</button>
+        </nav>
+
+        <div class="sidebar-panel">
+          <span class="eyebrow">Signed in</span>
+          <strong id="signedInEmail">Not signed in</strong>
+          <button id="signOutButton" class="ghost-btn" type="button">Sign out</button>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <span class="eyebrow">UAE HR &amp; Ops team</span>
+            <h1>UAE Kitchen - Compliance Portal</h1>
+          </div>
+          <div class="actions">
+            <button id="seedDemo" class="secondary-btn" type="button">Load Sample</button>
+            <button id="exportExcelTop" class="primary-btn" type="button">Export Excel</button>
+          </div>
+        </header>
+
+        <section id="dashboard" class="view active-view" aria-labelledby="dashboardTitle">
+          <div class="section-heading">
+            <div>
+              <h2 id="dashboardTitle">Certificate Overview</h2>
+              <p>Live status for compliance certificates, with urgent renewals surfaced first.</p>
+            </div>
+            <div id="overallStatus" class="status-pill">Compliant</div>
+          </div>
+
+          <div class="metric-grid">
+            <article class="metric">
+              <span>Employees</span>
+              <strong id="employeeMetric">0</strong>
+            </article>
+            <article class="metric">
+              <span>Valid</span>
+              <strong id="validMetric">0</strong>
+            </article>
+            <article class="metric">
+              <span>Expiring in 90 Days</span>
+              <strong id="ninetyMetric">0</strong>
+            </article>
+            <article class="metric urgent">
+              <span>Expired / 30 Days</span>
+              <strong id="urgentMetric">0</strong>
+            </article>
+          </div>
+
+          <div class="content-grid">
+            <section class="panel">
+              <div class="panel-heading">
+                <h3>Needs Immediate Attention</h3>
+                <span id="attentionCount" class="record-count">0 items</span>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Employee</th>
+                      <th>Certificate</th>
+                      <th>Expiry</th>
+                      <th>Status</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody id="attentionRows"></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <h3>Department Risk</h3>
+              </div>
+              <div id="departmentRiskList" class="risk-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="employees" class="view" aria-labelledby="employeesTitle">
+          <div class="section-heading">
+            <div>
+              <h2 id="employeesTitle">Employee Management</h2>
+              <p>Add, edit, and search staff records used for certificate tracking.</p>
+            </div>
+          </div>
+
+          <form id="employeeForm" class="form-grid">
+            <input name="editingId" type="hidden" />
+            <label>
+              Employee name
+              <input name="name" required placeholder="Aisha Rahman" />
+            </label>
+            <label>
+              Employee ID
+              <input name="employeeId" required placeholder="CK-1024" />
+            </label>
+            <label>
+              Department
+              <input name="department" required placeholder="Production" />
+            </label>
+            <label>
+              Position
+              <input name="position" required placeholder="Line Supervisor" />
+            </label>
+            <label>
+              Email
+              <input name="email" type="email" required placeholder="aisha@countrykitchen.ae" />
+            </label>
+            <label>
+              Phone
+              <input name="phone" required placeholder="+971 50 000 0000" />
+            </label>
+            <div class="form-actions">
+              <button id="cancelEmployeeEdit" class="secondary-btn hidden" type="button">Cancel</button>
+              <button id="employeeSubmitButton" class="primary-btn" type="submit">Add Employee</button>
+            </div>
+          </form>
+
+          <section class="panel utility-panel">
+            <div class="panel-heading table-tools">
+              <div>
+                <h3>Bulk Upload Employees</h3>
+                <small>Upload the CSV template to add employees and optional BFS/OHC issue dates in one step.</small>
+              </div>
+              <button id="downloadEmployeeTemplate" class="secondary-btn" type="button">Download Template</button>
+            </div>
+            <form id="bulkUploadForm" class="bulk-upload">
+              <label>
+                CSV file
+                <input name="csvFile" type="file" accept=".csv,text/csv" required />
+              </label>
+              <button class="primary-btn" type="submit">Upload CSV</button>
+            </form>
+          </section>
+
+          <section class="panel">
+            <div class="panel-heading table-tools">
+              <h3>Employee Directory</h3>
+              <div class="directory-filters">
+                <label class="search-label">
+                  <span>Search</span>
+                  <input id="employeeSearch" type="search" placeholder="Name, ID, department, email" />
+                </label>
+                <label>
+                  Department
+                  <select id="employeeDepartmentFilter">
+                    <option value="all">All departments</option>
+                  </select>
+                </label>
+                <label>
+                  Certificate status
+                  <select id="employeeStatusFilter">
+                    <option value="all">All statuses</option>
+                    <option value="Valid">Valid</option>
+                    <option value="Expiring">Expiring</option>
+                    <option value="Expired">Expired</option>
+                    <option value="Missing">Missing</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>ID</th>
+                    <th>Department</th>
+                    <th>Position</th>
+                    <th>Contact</th>
+                    <th>Certificates</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="employeeRows"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section id="certificates" class="view" aria-labelledby="certificatesTitle">
+          <div class="section-heading">
+            <div>
+              <h2 id="certificatesTitle">Certificate Tracking</h2>
+              <p>Enter issue dates and upload certificate files. Expiry dates are calculated automatically.</p>
+            </div>
+          </div>
+
+          <form id="certificateForm" class="form-grid">
+            <label>
+              Employee
+              <select name="employeeId" required></select>
+            </label>
+            <label>
+              Certificate type
+              <select name="type" required>
+                <option value="bfs">BFS - Basic Food Safety</option>
+                <option value="ohc">OHC - Occupational Health Card</option>
+              </select>
+            </label>
+            <label>
+              Issue date
+              <input name="issueDate" type="date" required />
+            </label>
+            <label>
+              Certificate file
+              <input name="file" type="file" accept=".pdf,image/*" />
+            </label>
+            <button class="primary-btn form-action" type="submit">Save Certificate</button>
+          </form>
+
+          <section class="panel">
+            <div class="panel-heading table-tools">
+              <h3>Full Certificate Register</h3>
+              <select id="statusFilter" aria-label="Filter by status">
+                <option value="all">All statuses</option>
+                <option value="Expired">Expired</option>
+                <option value="Expiring in 30 Days">Expiring in 30 Days</option>
+                <option value="Expiring in 90 Days">Expiring in 90 Days</option>
+                <option value="Valid">Valid</option>
+                <option value="Missing">Missing</option>
+              </select>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Employee</th>
+                    <th>Department</th>
+                    <th>Certificate</th>
+                    <th>Issue Date</th>
+                    <th>Expiry Date</th>
+                    <th>Status</th>
+                    <th>File</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="certificateRows"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section id="alerts" class="view" aria-labelledby="alertsTitle">
+          <div class="section-heading">
+            <div>
+              <h2 id="alertsTitle">Email Alerts</h2>
+              <p>Prepare reminder emails for the compliance manager and employees with certificates due soon.</p>
+            </div>
+          </div>
+
+          <form id="alertSettingsForm" class="settings-grid">
+            <label>
+              Kitchen alerts email
+              <input name="kitchenManagerEmail" type="email" required placeholder="kitchen.manager@calo.app" />
+            </label>
+            <label>
+              Dispatch alerts email
+              <input name="dispatchManagerEmail" type="email" required placeholder="dispatch.manager@calo.app" />
+            </label>
+            <label>
+              First reminder
+              <select name="firstReminder">
+                <option value="90">90 days before expiry</option>
+                <option value="60">60 days before expiry</option>
+                <option value="45">45 days before expiry</option>
+              </select>
+            </label>
+            <label>
+              Final reminder
+              <select name="finalReminder">
+                <option value="30">30 days before expiry</option>
+                <option value="14">14 days before expiry</option>
+                <option value="7">7 days before expiry</option>
+              </select>
+            </label>
+            <button class="primary-btn form-action" type="submit">Save Alert Settings</button>
+          </form>
+
+          <section class="panel">
+            <div class="panel-heading">
+              <h3>Alert Queue</h3>
+              <button id="prepareAllAlerts" class="secondary-btn" type="button">Prepare All Emails</button>
+            </div>
+            <div id="alertQueue" class="alert-list"></div>
+          </section>
+        </section>
+
+        <section id="reports" class="view" aria-labelledby="reportsTitle">
+          <div class="section-heading">
+            <div>
+              <h2 id="reportsTitle">Reports</h2>
+              <p>See the compliance rate, biggest pain points, and export the full certificate list.</p>
+            </div>
+          </div>
+
+          <div class="report-summary-grid">
+            <article class="report-card">
+              <span>Compliance Rate</span>
+              <strong id="complianceRateMetric">0%</strong>
+              <small id="complianceRateDetail">0 of 0 certificates valid</small>
+            </article>
+            <article class="report-card">
+              <span>Needs Action</span>
+              <strong id="needsActionMetric">0</strong>
+              <small>Expired, missing, or expiring within 30 days</small>
+            </article>
+            <article class="report-card">
+              <span>Main Pain Point</span>
+              <strong id="painPointMetric">None</strong>
+              <small id="painPointDetail">No certificate issues found</small>
+            </article>
+            <article class="report-card">
+              <span>Weakest Department</span>
+              <strong id="weakestDepartmentMetric">None</strong>
+              <small id="weakestDepartmentDetail">No urgent department risk</small>
+            </article>
+          </div>
+
+          <div class="report-band">
+            <div>
+              <h3>Certificate Register Excel Export</h3>
+              <p>Includes employee details, BFS status, OHC status, issue dates, expiry dates, and uploaded file names.</p>
+            </div>
+            <button id="exportExcel" class="primary-btn" type="button">Download Excel</button>
+          </div>
+
+          <section class="panel">
+            <div class="panel-heading">
+              <h3>Export Preview</h3>
+              <span id="reportCount" class="record-count">0 rows</span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Employee ID</th>
+                    <th>Name</th>
+                    <th>Department</th>
+                    <th>BFS Status</th>
+                    <th>BFS Expiry</th>
+                    <th>OHC Status</th>
+                    <th>OHC Expiry</th>
+                  </tr>
+                </thead>
+                <tbody id="reportRows"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,9 @@
+{
+  "name": "country-kitchen-compliance-portal",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Country Kitchen employee certificate compliance portal.",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
