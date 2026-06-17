@@ -281,6 +281,49 @@
             <button class="primary-btn form-action" type="submit">Save Certificate</button>
           </form>
 
+          <section class="panel utility-panel">
+            <div class="panel-heading">
+              <div>
+                <h3>Bulk Upload Certificate Files</h3>
+                <small>Select multiple certificate files at once. Files are matched to employees by filename — name your files after the employee (e.g. <strong>Aisha Rahman.pdf</strong>). Partial name matches also work.</small>
+              </div>
+            </div>
+            <div class="bulk-cert-grid">
+              <!-- BFS bulk upload -->
+              <div class="bulk-cert-col">
+                <div class="bulk-cert-type-header">
+                  <span class="cert-type-badge bfs-badge">BFS</span>
+                  <span>Basic Food Safety</span>
+                </div>
+                <label class="bulk-cert-file-label">
+                  Select BFS files
+                  <input id="bfsBulkInput" type="file" accept=".pdf,image/*" multiple />
+                </label>
+                <div id="bfsBulkPreview" class="bulk-preview hidden"></div>
+                <div id="bfsBulkActions" class="bulk-cert-actions hidden">
+                  <button id="bfsBulkConfirm" class="primary-btn" type="button">Attach Matched BFS Files</button>
+                  <button id="bfsBulkClear" class="secondary-btn" type="button">Clear</button>
+                </div>
+              </div>
+              <!-- OHC bulk upload -->
+              <div class="bulk-cert-col">
+                <div class="bulk-cert-type-header">
+                  <span class="cert-type-badge ohc-badge">OHC</span>
+                  <span>Occupational Health Card</span>
+                </div>
+                <label class="bulk-cert-file-label">
+                  Select OHC files
+                  <input id="ohcBulkInput" type="file" accept=".pdf,image/*" multiple />
+                </label>
+                <div id="ohcBulkPreview" class="bulk-preview hidden"></div>
+                <div id="ohcBulkActions" class="bulk-cert-actions hidden">
+                  <button id="ohcBulkConfirm" class="primary-btn" type="button">Attach Matched OHC Files</button>
+                  <button id="ohcBulkClear" class="secondary-btn" type="button">Clear</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
           <section class="panel">
             <div class="panel-heading table-tools">
               <h3>Full Certificate Register</h3>
