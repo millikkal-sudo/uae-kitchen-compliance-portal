@@ -168,6 +168,113 @@ document.getElementById("exportExcelTop").addEventListener("click", exportExcel)
 document.getElementById("prepareAllAlerts").addEventListener("click", sendEmailAlert);
 document.getElementById("downloadEmployeeTemplate").addEventListener("click", downloadEmployeeTemplate);
 
+// ── Bulk Certificate File Upload ──────────────────────────────────────────────
+
+function normalise(str) {
+  return str.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function matchFileToEmployee(fileName) {
+  // Strip extension
+  const base = normalise(fileName.replace(/\.[^.]+$/, ""));
+  // Try exact match first, then partial
+  const exact = state.employees.find((e) => normalise(e.name) === base);
+  if (exact) return { employee: exact, confidence: "exact" };
+  const partial = state.employees.find(
+    (e) => base.includes(normalise(e.name)) || normalise(e.name).includes(base)
+  );
+  if (partial) return { employee: partial, confidence: "partial" };
+  return null;
+}
+
+function buildBulkPreview(files, type) {
+  const rows = Array.from(files).map((file) => {
+    const match = matchFileToEmployee(file.name);
+    return { file, match };
+  });
+  return rows;
+}
+
+function renderBulkPreview(rows, previewEl) {
+  if (!rows.length) { previewEl.classList.add("hidden"); return; }
+  const matched = rows.filter((r) => r.match);
+  const unmatched = rows.filter((r) => !r.match);
+  let html = `<p class="bulk-summary">${matched.length} of ${rows.length} file(s) matched to employees.</p>`;
+  html += `<div class="table-wrap"><table><thead><tr><th>File</th><th>Matched Employee</th><th>Confidence</th></tr></thead><tbody>`;
+  for (const row of rows) {
+    const matchCell = row.match
+      ? `<span class="status-valid">${escapeHtml(row.match.employee.name)}</span>`
+      : `<span class="status-expired">No match</span>`;
+    const confCell = row.match
+      ? `<span class="conf-${row.match.confidence}">${row.match.confidence}</span>`
+      : "—";
+    html += `<tr><td>${escapeHtml(row.file.name)}</td><td>${matchCell}</td><td>${confCell}</td></tr>`;
+  }
+  html += `</tbody></table></div>`;
+  previewEl.innerHTML = html;
+  previewEl.classList.remove("hidden");
+}
+
+async function applyBulkCertFiles(rows, type) {
+  let count = 0;
+  for (const row of rows) {
+    if (!row.match) continue;
+    const employee = state.employees.find((e) => e.id === row.match.employee.id);
+    if (!employee) continue;
+    const uploadedFile = await readCertificateFile(row.file);
+    if (!employee.certificates[type]) employee.certificates[type] = {};
+    employee.certificates[type].file = uploadedFile;
+    employee.certificates[type].updatedAt = new Date().toISOString();
+    employee.updatedAt = new Date().toISOString();
+    count++;
+  }
+  return count;
+}
+
+(function initBulkCertUploads() {
+  ["bfs", "ohc"].forEach((type) => {
+    const inputEl = document.getElementById(`${type}BulkInput`);
+    const previewEl = document.getElementById(`${type}BulkPreview`);
+    const actionsEl = document.getElementById(`${type}BulkActions`);
+    const confirmBtn = document.getElementById(`${type}BulkConfirm`);
+    const clearBtn = document.getElementById(`${type}BulkClear`);
+    let currentRows = [];
+
+    inputEl.addEventListener("change", () => {
+      const files = inputEl.files;
+      if (!files || !files.length) {
+        previewEl.classList.add("hidden");
+        actionsEl.classList.add("hidden");
+        return;
+      }
+      currentRows = buildBulkPreview(files, type);
+      renderBulkPreview(currentRows, previewEl);
+      actionsEl.classList.remove("hidden");
+    });
+
+    confirmBtn.addEventListener("click", async () => {
+      if (!currentRows.length) return;
+      const count = await applyBulkCertFiles(currentRows, type);
+      persist();
+      render();
+      showToast(`${count} ${CERTIFICATES[type].label} file(s) attached to employees.`);
+      inputEl.value = "";
+      previewEl.classList.add("hidden");
+      actionsEl.classList.add("hidden");
+      currentRows = [];
+    });
+
+    clearBtn.addEventListener("click", () => {
+      inputEl.value = "";
+      previewEl.classList.add("hidden");
+      actionsEl.classList.add("hidden");
+      currentRows = [];
+    });
+  });
+})();
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 certificateForm.elements.issueDate.addEventListener("change", (event) => {
   const issueDate = event.target.value;
   const type = certificateForm.elements.type.value;
