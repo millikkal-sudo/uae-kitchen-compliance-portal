@@ -35,6 +35,7 @@ const employeeSearch = document.getElementById("employeeSearch");
 const employeeDepartmentFilter = document.getElementById("employeeDepartmentFilter");
 const employeeStatusFilter = document.getElementById("employeeStatusFilter");
 const statusFilter = document.getElementById("statusFilter");
+const certSearch = document.getElementById("certSearch");
 
 document.getElementById("loginForm").addEventListener("submit", (event) => {
   event.preventDefault();
@@ -162,6 +163,7 @@ employeeSearch.addEventListener("input", renderEmployeeRows);
 employeeDepartmentFilter.addEventListener("change", renderEmployeeRows);
 employeeStatusFilter.addEventListener("change", renderEmployeeRows);
 statusFilter.addEventListener("change", renderCertificateRows);
+certSearch.addEventListener("input", renderCertificateRows);
 document.getElementById("seedDemo").addEventListener("click", seedDemoData);
 document.getElementById("exportExcel").addEventListener("click", exportExcel);
 document.getElementById("exportExcelTop").addEventListener("click", exportExcel);
@@ -482,7 +484,14 @@ function renderEmployeeRows() {
 
 function renderCertificateRows() {
   const filter = statusFilter.value;
-  const summaries = getCertificateSummaries().filter((item) => filter === "all" || item.status === filter);
+  const query = certSearch.value.trim().toLowerCase();
+  const summaries = getCertificateSummaries().filter((item) => {
+    const statusMatch = filter === "all" || item.status === filter;
+    const searchMatch = !query ||
+      item.employee.name.toLowerCase().includes(query) ||
+      item.employee.employeeId.toLowerCase().includes(query);
+    return statusMatch && searchMatch;
+  });
   const rows = summaries.map((item) => `<tr>
     <td>${escapeHtml(item.employee.name)}<br><small>${escapeHtml(item.employee.employeeId)}</small></td>
     <td>${escapeHtml(item.employee.department)}</td>
