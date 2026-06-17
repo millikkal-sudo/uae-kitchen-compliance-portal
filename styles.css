@@ -1058,3 +1058,27 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 }
+
+/* ── Certificate register search ─────────────────────────────────── */
+.cert-register-tools {
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+#certSearch {
+  flex: 1 1 180px;
+  min-width: 140px;
+  max-width: 260px;
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+#certSearch:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent);
+}
