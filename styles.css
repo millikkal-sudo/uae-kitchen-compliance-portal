@@ -950,3 +950,111 @@ textarea:focus {
     padding: 24px;
   }
 }
+
+/* ── Bulk Certificate Upload ─────────────────────────────────────── */
+.bulk-cert-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  margin-top: 4px;
+}
+
+.bulk-cert-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.bulk-cert-type-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.cert-type-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 9px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.bfs-badge {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.ohc-badge {
+  background: #ede9fe;
+  color: #6d28d9;
+}
+
+.bulk-cert-file-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.bulk-cert-file-label input[type="file"] {
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.bulk-preview {
+  margin-top: 4px;
+}
+
+.bulk-summary {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.bulk-cert-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.status-valid {
+  color: #15803d;
+  font-weight: 500;
+}
+
+.status-expired {
+  color: #dc2626;
+  font-weight: 500;
+}
+
+.conf-exact {
+  background: #dcfce7;
+  color: #15803d;
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.conf-partial {
+  background: #fef9c3;
+  color: #854d0e;
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+@media (max-width: 768px) {
+  .bulk-cert-grid {
+    grid-template-columns: 1fr;
+  }
+}
