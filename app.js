@@ -175,15 +175,10 @@ function normalise(str) {
 }
 
 function matchFileToEmployee(fileName) {
-  // Strip extension
-  const base = normalise(fileName.replace(/\.[^.]+$/, ""));
-  // Try exact match first, then partial
-  const exact = state.employees.find((e) => normalise(e.name) === base);
+  // Strip extension, then match against employee ID (case-insensitive)
+  const base = fileName.replace(/\.[^.]+$/, "").trim().toLowerCase();
+  const exact = state.employees.find((e) => e.employeeId.trim().toLowerCase() === base);
   if (exact) return { employee: exact, confidence: "exact" };
-  const partial = state.employees.find(
-    (e) => base.includes(normalise(e.name)) || normalise(e.name).includes(base)
-  );
-  if (partial) return { employee: partial, confidence: "partial" };
   return null;
 }
 
