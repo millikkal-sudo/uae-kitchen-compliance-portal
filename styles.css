@@ -83,7 +83,7 @@ tr:hover td { background: #fafbfc; }
 
 .sidebar-panel { padding:14px 14px 20px; border-top:1px solid var(--border); font-size:12px; }
 .eyebrow       { display:block; font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; color:var(--text-muted); margin-bottom:4px; }
-.sidebar-panel strong { display:block; font-size:12px; margin-bottom:6px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.sidebar-panel strong { display:block; font-size:12px; margin-bottom:8px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
 /* Sync dot */
 .sync-status { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--text-muted); margin-bottom:10px; }
@@ -172,6 +172,7 @@ tr:hover td { background: #fafbfc; }
 
 /* ── Staff table ─────────────────────────────────────────────────────── */
 .staff-table td:nth-child(4), .staff-table td:nth-child(7) { white-space:nowrap; }
+
 .row-actions { white-space:nowrap; }
 
 /* ── Cert edit panel ─────────────────────────────────────────────────── */
@@ -287,45 +288,71 @@ tr:hover td { background: #fafbfc; }
 .bulk-emp-step p { font-size: 12px; color: var(--text-muted); }
 .bulk-emp-step button, .bulk-emp-step .inline-upload { margin-top: 4px; }
 
-/* ── Role badge ──────────────────────────────────────────────────────── */
-.role-badge {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 5px;
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: .05em;
-  margin-bottom: 8px;
-}
-.role-editor { background: color-mix(in srgb,var(--accent) 15%,transparent); color: var(--accent-dark); }
-.role-viewer { background: #f3f4f6; color: #374151; }
-
-/* ── Plus (quick-upload) button ──────────────────────────────────────── */
-.plus-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: color-mix(in srgb,var(--accent) 12%,transparent);
-  color: var(--accent-dark);
-  font-size: 15px;
-  font-weight: 700;
-  line-height: 1;
-  border: 1px solid color-mix(in srgb,var(--accent) 30%,transparent);
-  padding: 0;
-  transition: background .12s, transform .1s;
-  vertical-align: middle;
-  margin-right: 4px;
-}
-.plus-btn:hover {
-  background: var(--accent);
-  color: #fff;
-  transform: scale(1.15);
+/* ── Viewer badge ────────────────────────────────────────────────── */
+.viewer-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: #fef9c3; color: #854d0e;
+  border: 1px solid #fde68a;
+  border-radius: 6px; padding: 4px 10px;
+  font-size: 11px; font-weight: 700;
+  margin-bottom: 10px;
 }
 
-/* ── File cell with actions ──────────────────────────────────────────── */
-.file-cell { white-space: nowrap; }
-.file-cell-actions { display: inline-flex; align-items: center; gap: 2px; margin-left: 4px; }
+/* ── + Upload cert button (in table cell) ───────────────────────── */
+.upload-cert-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px;
+  background: var(--accent); color: #fff;
+  border-radius: 50%; font-size: 16px; font-weight: 700;
+  line-height: 1; flex-shrink: 0;
+  transition: background .15s, transform .12s;
+}
+.upload-cert-btn:hover { background: var(--accent-dark); transform: scale(1.1); }
+
+/* ── Send to Manager button ─────────────────────────────────────── */
+.send-manager-btn {
+  background: #eff6ff; color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+  padding: 5px 11px; font-size: 12px; font-weight: 600;
+  border-radius: 6px; white-space: nowrap;
+  transition: background .12s;
+}
+.send-manager-btn:hover { background: #dbeafe; }
+
+/* ── Cert upload modal ──────────────────────────────────────────── */
+.modal-overlay {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(0,0,0,.45);
+  display: flex; align-items: center; justify-content: center;
+}
+.modal-box {
+  background: var(--surface);
+  border-radius: 14px;
+  padding: 28px 28px 24px;
+  width: 100%; max-width: 440px;
+  box-shadow: 0 8px 40px rgba(0,0,0,.18);
+}
+.modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 20px;
+}
+.modal-header h3 { font-size: 15px; font-weight: 700; }
+.modal-form {
+  display: flex; flex-direction: column; gap: 14px;
+}
+.modal-form label {
+  display: flex; flex-direction: column; gap: 5px;
+  font-size: 12px; font-weight: 600; color: var(--text-muted);
+}
+.modal-form input { font-size: 13px; }
+.modal-actions { display: flex; gap: 10px; margin-top: 4px; }
+
+/* ── BFS / OHC step badge ───────────────────────────────────────── */
+.step-num.bfs-step {
+  background: #1d4ed8; font-size: 10px; letter-spacing: .04em;
+  width: auto; padding: 0 8px; border-radius: 6px;
+}
+.step-num.ohc-step {
+  background: #6d28d9; font-size: 10px; letter-spacing: .04em;
+  width: auto; padding: 0 8px; border-radius: 6px;
+}
