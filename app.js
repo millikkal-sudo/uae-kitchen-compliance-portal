@@ -1,1152 +1,654 @@
-const STORAGE_KEY = "country-kitchen-compliance-v1";
-const SESSION_KEY = "country-kitchen-compliance-session";
-const AUTHORIZED_EMAILS = ["m.illikkal@calo.app"];
+// ── Constants ─────────────────────────────────────────────────────────────────
+const CLIENT_ID = "942236854237-ecukbhhhmkdm2564vf27e830o9daq69f.apps.googleusercontent.com";
+const SCOPES = "https://www.googleapis.com/auth/drive.appdata";
+const DRIVE_FILE_NAME = "uae-kitchen-compliance-data.json";
+const AUTHORIZED_DOMAIN = "calo.app";
+
 const CERTIFICATES = {
-  bfs: {
-    label: "BFS",
-    fullName: "Basic Food Safety",
-    validYears: 2,
-  },
-  ohc: {
-    label: "OHC",
-    fullName: "Occupational Health Card",
-    validYears: 1,
-  },
+  bfs: { label: "BFS", fullName: "Basic Food Safety",        validYears: 2 },
+  ohc: { label: "OHC", fullName: "Occupational Health Card", validYears: 1 },
 };
 
-const defaultSettings = {
-  alertsEmail: "compliance.manager@calo.app",
-  reminderDays: 30,
-};
+const defaultSettings = { alertsEmail: "compliance.manager@calo.app", reminderDays: 30 };
 
-let state = loadState();
-let session = loadSession();
+// ── State ─────────────────────────────────────────────────────────────────────
+let state   = { employees: [], settings: { ...defaultSettings } };
+let session = null;
+let driveFileId = null;
+let saveTimer   = null;
+let activeBulkCertType = "bfs"; // unified bulk toggle
 
-const loginView = document.getElementById("loginView");
-const appShell = document.getElementById("appShell");
-const toast = document.getElementById("toast");
-const views = document.querySelectorAll(".view");
-const tabs = document.querySelectorAll(".nav-tab");
-const employeeForm = document.getElementById("employeeForm");
-const certificateForm = document.getElementById("certificateForm");
-const alertSettingsForm = document.getElementById("alertSettingsForm");
-const bulkUploadForm = document.getElementById("bulkUploadForm");
-const employeeSearch = document.getElementById("employeeSearch");
-const employeeDepartmentFilter = document.getElementById("employeeDepartmentFilter");
-const employeeStatusFilter = document.getElementById("employeeStatusFilter");
-const statusFilter = document.getElementById("statusFilter");
-const certSearch = document.getElementById("certSearch");
+// ── DOM refs ──────────────────────────────────────────────────────────────────
+const loginView  = document.getElementById("loginView");
+const appShell   = document.getElementById("appShell");
+const toast      = document.getElementById("toast");
+const views      = document.querySelectorAll(".view");
+const tabs       = document.querySelectorAll(".nav-tab");
+const syncStatus = document.getElementById("syncStatus");
+const syncLabel  = document.getElementById("syncLabel");
 
-document.getElementById("loginForm").addEventListener("submit", (event) => {
-  event.preventDefault();
-  const data = formData(event.currentTarget);
-  const email = data.email.trim().toLowerCase();
-  if (!AUTHORIZED_EMAILS.includes(email)) {
-    showToast("Use an authorized compliance team email.");
-    return;
+const employeeForm          = document.getElementById("employeeForm");
+const certificateForm       = document.getElementById("certificateForm");
+const alertSettingsForm     = document.getElementById("alertSettingsForm");
+const bulkUploadForm        = document.getElementById("bulkUploadForm");
+const employeeSearch        = document.getElementById("employeeSearch");
+const employeeDeptFilter    = document.getElementById("employeeDepartmentFilter");
+const employeeStatusFilter  = document.getElementById("employeeStatusFilter");
+
+// ── Google Sign-In ────────────────────────────────────────────────────────────
+function initGoogleSignIn() {
+  if (!window.google) { setTimeout(initGoogleSignIn, 200); return; }
+  google.accounts.id.initialize({ client_id: CLIENT_ID, callback: handleGoogleCredential, auto_select: true });
+  google.accounts.id.renderButton(document.getElementById("googleSignInButton"), { theme: "outline", size: "large", width: 280 });
+  google.accounts.id.prompt();
+}
+
+function handleGoogleCredential(response) {
+  const payload = parseJwt(response.credential);
+  if (!(payload.email || "").endsWith("@" + AUTHORIZED_DOMAIN)) {
+    document.getElementById("loginError").classList.remove("hidden"); return;
   }
-  session = { email, signedInAt: new Date().toISOString() };
-  localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-  event.currentTarget.reset();
-  render();
-  showToast("Signed in with Google account.");
-});
-
-document.getElementById("signOutButton").addEventListener("click", () => {
-  session = null;
-  localStorage.removeItem(SESSION_KEY);
-  render();
-});
-
-tabs.forEach((tab) => {
-  tab.addEventListener("click", () => {
-    const nextView = tab.dataset.view;
-    tabs.forEach((item) => item.classList.toggle("active", item === tab));
-    views.forEach((view) => view.classList.toggle("active-view", view.id === nextView));
+  document.getElementById("loginError").classList.add("hidden");
+  document.getElementById("loginLoading").classList.remove("hidden");
+  const tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: CLIENT_ID, scope: SCOPES,
+    callback: async (tok) => {
+      document.getElementById("loginLoading").classList.add("hidden");
+      if (tok.error) { showToast("Drive access denied."); return; }
+      session = { email: payload.email, name: payload.name || payload.email, accessToken: tok.access_token };
+      setSyncState("syncing");
+      await loadFromDrive();
+      render();
+      showToast(`Welcome, ${session.name.split(" ")[0]}!`);
+    },
   });
-});
+  tokenClient.requestAccessToken({ prompt: "" });
+}
 
-employeeForm.addEventListener("submit", (event) => {
-  event.preventDefault();
-  const data = formData(event.currentTarget);
-  const existing = state.employees.find((employee) => employee.id === data.editingId);
-  const duplicateId = state.employees.find(
-    (employee) => employee.employeeId.toLowerCase() === data.employeeId.trim().toLowerCase() && employee.id !== data.editingId,
-  );
+function parseJwt(token) {
+  try { return JSON.parse(atob(token.split(".")[1].replace(/-/g,"+").replace(/_/g,"/"))); } catch { return {}; }
+}
 
-  if (duplicateId) {
-    showToast("That employee ID is already in use.");
-    event.currentTarget.elements.employeeId.focus();
-    return;
-  }
+// ── Drive API ─────────────────────────────────────────────────────────────────
+async function driveReq(method, url, body, ct) {
+  const h = { Authorization: `Bearer ${session.accessToken}` };
+  if (ct) h["Content-Type"] = ct;
+  const res = await fetch(url, { method, headers: h, body });
+  if (res.status === 401) { signOut(); throw new Error("Token expired"); }
+  return res;
+}
 
-  const employee = {
+async function loadFromDrive() {
+  try {
+    const list = await (await driveReq("GET",
+      `https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name%3D%27${DRIVE_FILE_NAME}%27&fields=files(id)`
+    )).json();
+    if (list.files?.length) {
+      driveFileId = list.files[0].id;
+      const raw = await (await driveReq("GET",
+        `https://www.googleapis.com/drive/v3/files/${driveFileId}?alt=media`
+      )).json();
+      state = { employees: (raw.employees||[]).map(normalizeEmployee), settings: normalizeSettings(raw.settings||{}) };
+    } else {
+      driveFileId = await createDriveFile();
+    }
+    setSyncState("idle");
+  } catch (e) { console.error(e); setSyncState("error"); showToast("Could not load from Drive."); }
+}
+
+async function createDriveFile() {
+  const meta = { name: DRIVE_FILE_NAME, parents: ["appDataFolder"] };
+  const content = JSON.stringify({ employees: [], settings: defaultSettings });
+  const b = "ckb_" + Math.random().toString(36).slice(2);
+  const body = `--${b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(meta)}\r\n--${b}\r\nContent-Type: application/json\r\n\r\n${content}\r\n--${b}--`;
+  const r = await driveReq("POST","https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id",body,`multipart/related; boundary=${b}`);
+  return (await r.json()).id;
+}
+
+async function saveToDrive() {
+  if (!session?.accessToken || !driveFileId) return;
+  setSyncState("syncing");
+  try {
+    await driveReq("PATCH",`https://www.googleapis.com/upload/drive/v3/files/${driveFileId}?uploadType=media`,JSON.stringify(state),"application/json");
+    setSyncState("idle");
+  } catch(e) { console.error(e); setSyncState("error"); showToast("Drive save failed."); }
+}
+
+function persist() {
+  clearTimeout(saveTimer);
+  setSyncState("syncing");
+  saveTimer = setTimeout(saveToDrive, 800);
+}
+
+function setSyncState(s) {
+  syncStatus.className = "sync-status sync-" + s;
+  syncLabel.textContent = s === "syncing" ? "Saving…" : s === "error" ? "Save failed" : "Synced to Drive";
+}
+
+// ── Sign out ──────────────────────────────────────────────────────────────────
+function signOut() {
+  if (window.google) google.accounts.id.disableAutoSelect();
+  session = null; driveFileId = null;
+  state = { employees: [], settings: { ...defaultSettings } };
+  render();
+}
+document.getElementById("signOutButton").addEventListener("click", signOut);
+
+// ── Tab navigation ────────────────────────────────────────────────────────────
+tabs.forEach(tab => tab.addEventListener("click", () => {
+  tabs.forEach(t => t.classList.toggle("active", t === tab));
+  views.forEach(v => v.classList.toggle("active-view", v.id === tab.dataset.view));
+}));
+
+// ── Employee form (name + ID + dept only) ─────────────────────────────────────
+employeeForm.addEventListener("submit", e => {
+  e.preventDefault();
+  const d = formData(e.currentTarget);
+  const existing = state.employees.find(x => x.id === d.editingId);
+  const dupId = state.employees.find(x => x.employeeId.toLowerCase() === d.employeeId.trim().toLowerCase() && x.id !== d.editingId);
+  if (dupId) { showToast("Employee ID already in use."); return; }
+  const emp = {
     id: existing?.id || crypto.randomUUID(),
-    name: data.name.trim(),
-    employeeId: data.employeeId.trim(),
-    department: data.department.trim(),
-    position: data.position.trim(),
-    email: data.email.trim().toLowerCase(),
-    phone: data.phone.trim(),
+    name: d.name.trim(),
+    employeeId: d.employeeId.trim(),
+    department: d.department.trim(),
     certificates: existing?.certificates || createEmptyCertificates(),
     createdAt: existing?.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
-
-  if (existing) {
-    state.employees = state.employees.map((item) => (item.id === existing.id ? employee : item));
-  } else {
-    state.employees.unshift(employee);
-  }
-
-  persist();
-  resetEmployeeForm();
-  render();
+  state.employees = existing
+    ? state.employees.map(x => x.id === existing.id ? emp : x)
+    : [emp, ...state.employees];
+  persist(); resetEmployeeForm(); render();
   showToast(existing ? "Employee updated." : "Employee added.");
 });
 
 document.getElementById("cancelEmployeeEdit").addEventListener("click", resetEmployeeForm);
 
-certificateForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const data = formData(event.currentTarget);
-  const employee = state.employees.find((item) => item.id === data.employeeId);
-  if (!employee) {
-    showToast("Add an employee before saving a certificate.");
-    return;
-  }
+function resetEmployeeForm() {
+  employeeForm.reset();
+  employeeForm.elements.editingId.value = "";
+  document.getElementById("employeeFormTitle").textContent = "Add Employee";
+  document.getElementById("employeeSubmitButton").textContent = "Add Employee";
+  document.getElementById("cancelEmployeeEdit").classList.add("hidden");
+}
 
-  const type = data.type;
-  const file = event.currentTarget.elements.file.files[0];
-  const previous = employee.certificates[type] || {};
-  const uploadedFile = file ? await readCertificateFile(file) : previous.file || null;
-
-  employee.certificates[type] = {
-    issueDate: data.issueDate,
-    expiryDate: data.expiryDate || calculateExpiryDate(data.issueDate, CERTIFICATES[type].validYears),
-    file: uploadedFile,
+// ── Certificate form (edit individual cert) ───────────────────────────────────
+certificateForm.addEventListener("submit", async e => {
+  e.preventDefault();
+  const d = formData(e.currentTarget);
+  const emp = state.employees.find(x => x.id === d.employeeId);
+  if (!emp) return;
+  const type = d.type;
+  const file = e.currentTarget.elements.file.files[0];
+  const prev = emp.certificates[type] || {};
+  const uploaded = file ? await readCertFile(file) : prev.file || null;
+  emp.certificates[type] = {
+    issueDate: d.issueDate,
+    expiryDate: d.expiryDate || calcExpiry(d.issueDate, CERTIFICATES[type].validYears),
+    file: uploaded,
     updatedAt: new Date().toISOString(),
   };
-  employee.updatedAt = new Date().toISOString();
-
-  persist();
-  event.currentTarget.reset();
-  render();
-  showToast(`${CERTIFICATES[type].label} certificate saved for ${employee.name}.`);
+  emp.updatedAt = new Date().toISOString();
+  persist(); hideCertEdit(); render();
+  showToast(`${CERTIFICATES[type].label} saved for ${emp.name}.`);
 });
 
-alertSettingsForm.addEventListener("submit", (event) => {
-  event.preventDefault();
-  const data = formData(event.currentTarget);
-  state.settings = {
-    alertsEmail: data.alertsEmail.trim().toLowerCase(),
-    reminderDays: Number(data.reminderDays),
-  };
-  persist();
-  render();
-  sendEmailAlert();
+certificateForm.elements.issueDate.addEventListener("change", e => {
+  const type = certificateForm.elements.type.value;
+  if (e.target.value && type) certificateForm.elements.expiryDate.value = calcExpiry(e.target.value, CERTIFICATES[type].validYears);
 });
 
-bulkUploadForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const file = event.currentTarget.elements.csvFile.files[0];
+document.getElementById("cancelCertEdit").addEventListener("click", hideCertEdit);
+
+function showCertEdit(empId, type) {
+  const emp = state.employees.find(x => x.id === empId);
+  if (!emp) return;
+  const panel = document.getElementById("certEditPanel");
+  document.getElementById("certEditTitle").textContent = `Edit ${CERTIFICATES[type].label} – ${emp.name}`;
+  certificateForm.elements.employeeId.value = empId;
+  certificateForm.elements.type.value = type;
+  certificateForm.elements.issueDate.value  = emp.certificates[type]?.issueDate  || "";
+  certificateForm.elements.expiryDate.value = emp.certificates[type]?.expiryDate || "";
+  panel.classList.remove("hidden");
+  panel.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function hideCertEdit() {
+  document.getElementById("certEditPanel").classList.add("hidden");
+  certificateForm.reset();
+}
+
+// ── Alert settings ────────────────────────────────────────────────────────────
+alertSettingsForm.addEventListener("submit", e => {
+  e.preventDefault();
+  const d = formData(e.currentTarget);
+  state.settings = { alertsEmail: d.alertsEmail.trim().toLowerCase(), reminderDays: Number(d.reminderDays) };
+  persist(); render(); sendEmailAlert();
+});
+
+// ── Bulk employee CSV ─────────────────────────────────────────────────────────
+bulkUploadForm.addEventListener("submit", async e => {
+  e.preventDefault();
+  const file = e.currentTarget.elements.csvFile.files[0];
   if (!file) return;
-  const text = await file.text();
-  const result = importEmployeesFromCsv(text);
-  persist();
-  event.currentTarget.reset();
-  render();
-  showToast(`CSV upload complete: ${result.added} added, ${result.updated} updated, ${result.skipped} skipped.`);
+  const result = importFromCsv(await file.text());
+  persist(); e.currentTarget.reset(); render();
+  showToast(`CSV done: ${result.added} added, ${result.updated} updated, ${result.skipped} skipped.`);
 });
 
-employeeSearch.addEventListener("input", renderEmployeeRows);
-employeeDepartmentFilter.addEventListener("change", renderEmployeeRows);
-employeeStatusFilter.addEventListener("change", renderEmployeeRows);
-statusFilter.addEventListener("change", renderCertificateRows);
-certSearch.addEventListener("input", renderCertificateRows);
-document.getElementById("seedDemo").addEventListener("click", seedDemoData);
-document.getElementById("exportExcel").addEventListener("click", exportExcel);
-document.getElementById("exportExcelTop").addEventListener("click", exportExcel);
-document.getElementById("prepareAllAlerts").addEventListener("click", sendEmailAlert);
-document.getElementById("downloadEmployeeTemplate").addEventListener("click", downloadEmployeeTemplate);
+// ── Unified bulk certificate upload ──────────────────────────────────────────
+(function initBulkCert() {
+  const typeBtns   = document.querySelectorAll(".type-btn");
+  const input      = document.getElementById("bulkCertInput");
+  const previewEl  = document.getElementById("bulkCertPreview");
+  const actionsEl  = document.getElementById("bulkCertActions");
+  const confirmBtn = document.getElementById("bulkCertConfirm");
+  const clearBtn   = document.getElementById("bulkCertClear");
+  let rows = [];
 
-// ── Bulk Certificate File Upload ──────────────────────────────────────────────
+  typeBtns.forEach(btn => btn.addEventListener("click", () => {
+    typeBtns.forEach(b => b.classList.toggle("active", b === btn));
+    activeBulkCertType = btn.dataset.cert;
+    // re-preview with new type if files already chosen
+    if (input.files?.length) { rows = buildPreview(input.files); renderPreview(rows, previewEl); actionsEl.classList.remove("hidden"); }
+  }));
 
-function normalise(str) {
-  return str.toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
-function matchFileToEmployee(fileName) {
-  // Strip extension, then match against employee ID (case-insensitive)
-  const base = fileName.replace(/\.[^.]+$/, "").trim().toLowerCase();
-  const exact = state.employees.find((e) => e.employeeId.trim().toLowerCase() === base);
-  if (exact) return { employee: exact, confidence: "exact" };
-  return null;
-}
-
-function buildBulkPreview(files, type) {
-  const rows = Array.from(files).map((file) => {
-    const match = matchFileToEmployee(file.name);
-    return { file, match };
+  input.addEventListener("change", () => {
+    if (!input.files?.length) { previewEl.classList.add("hidden"); actionsEl.classList.add("hidden"); return; }
+    rows = buildPreview(input.files);
+    renderPreview(rows, previewEl);
+    actionsEl.classList.remove("hidden");
   });
-  return rows;
+
+  confirmBtn.addEventListener("click", async () => {
+    const count = await applyBulkFiles(rows, activeBulkCertType);
+    persist(); render();
+    showToast(`${count} ${CERTIFICATES[activeBulkCertType].label} file(s) attached.`);
+    input.value = ""; previewEl.classList.add("hidden"); actionsEl.classList.add("hidden"); rows = [];
+  });
+
+  clearBtn.addEventListener("click", () => {
+    input.value = ""; previewEl.classList.add("hidden"); actionsEl.classList.add("hidden"); rows = [];
+  });
+})();
+
+function buildPreview(files) {
+  return Array.from(files).map(f => ({ file: f, match: matchFile(f.name) }));
 }
 
-function renderBulkPreview(rows, previewEl) {
-  if (!rows.length) { previewEl.classList.add("hidden"); return; }
-  const matched = rows.filter((r) => r.match);
-  const unmatched = rows.filter((r) => !r.match);
-  let html = `<p class="bulk-summary">${matched.length} of ${rows.length} file(s) matched to employees.</p>`;
-  html += `<div class="table-wrap"><table><thead><tr><th>File</th><th>Matched Employee</th><th>Confidence</th></tr></thead><tbody>`;
-  for (const row of rows) {
-    const matchCell = row.match
-      ? `<span class="status-valid">${escapeHtml(row.match.employee.name)}</span>`
-      : `<span class="status-expired">No match</span>`;
-    const confCell = row.match
-      ? `<span class="conf-${row.match.confidence}">${row.match.confidence}</span>`
-      : "—";
-    html += `<tr><td>${escapeHtml(row.file.name)}</td><td>${matchCell}</td><td>${confCell}</td></tr>`;
-  }
+function matchFile(fileName) {
+  const base = fileName.replace(/\.[^.]+$/, "").trim().toLowerCase();
+  const emp = state.employees.find(e => e.employeeId.trim().toLowerCase() === base);
+  return emp ? { employee: emp } : null;
+}
+
+function renderPreview(rows, el) {
+  const matched = rows.filter(r => r.match).length;
+  let html = `<p class="bulk-summary">${matched} of ${rows.length} file(s) matched · Type: <strong>${CERTIFICATES[activeBulkCertType].label}</strong></p>`;
+  html += `<div class="table-wrap"><table><thead><tr><th>File</th><th>Matched Employee</th></tr></thead><tbody>`;
+  rows.forEach(r => {
+    html += `<tr><td>${escHtml(r.file.name)}</td><td>${r.match ? `<span class="status-valid">${escHtml(r.match.employee.name)}</span>` : `<span class="status-expired">No match</span>`}</td></tr>`;
+  });
   html += `</tbody></table></div>`;
-  previewEl.innerHTML = html;
-  previewEl.classList.remove("hidden");
+  el.innerHTML = html; el.classList.remove("hidden");
 }
 
-async function applyBulkCertFiles(rows, type) {
+async function applyBulkFiles(rows, type) {
   let count = 0;
-  for (const row of rows) {
-    if (!row.match) continue;
-    const employee = state.employees.find((e) => e.id === row.match.employee.id);
-    if (!employee) continue;
-    const uploadedFile = await readCertificateFile(row.file);
-    if (!employee.certificates[type]) employee.certificates[type] = {};
-    employee.certificates[type].file = uploadedFile;
-    employee.certificates[type].updatedAt = new Date().toISOString();
-    employee.updatedAt = new Date().toISOString();
+  for (const r of rows) {
+    if (!r.match) continue;
+    const emp = state.employees.find(e => e.id === r.match.employee.id);
+    if (!emp) continue;
+    emp.certificates[type] = { ...(emp.certificates[type]||{}), file: await readCertFile(r.file), updatedAt: new Date().toISOString() };
+    emp.updatedAt = new Date().toISOString();
     count++;
   }
   return count;
 }
 
-(function initBulkCertUploads() {
-  ["bfs", "ohc"].forEach((type) => {
-    const inputEl = document.getElementById(`${type}BulkInput`);
-    const previewEl = document.getElementById(`${type}BulkPreview`);
-    const actionsEl = document.getElementById(`${type}BulkActions`);
-    const confirmBtn = document.getElementById(`${type}BulkConfirm`);
-    const clearBtn = document.getElementById(`${type}BulkClear`);
-    let currentRows = [];
+// ── Filters ───────────────────────────────────────────────────────────────────
+employeeSearch.addEventListener("input",       renderStaffRows);
+employeeDeptFilter.addEventListener("change",  renderStaffRows);
+employeeStatusFilter.addEventListener("change",renderStaffRows);
+document.getElementById("seedDemo").addEventListener("click", seedDemoData);
+document.getElementById("exportExcel").addEventListener("click", exportExcel);
+document.getElementById("exportExcelTop").addEventListener("click", exportExcel);
+document.getElementById("prepareAllAlerts").addEventListener("click", sendEmailAlert);
+document.getElementById("downloadEmployeeTemplate").addEventListener("click", downloadTemplate);
 
-    inputEl.addEventListener("change", () => {
-      const files = inputEl.files;
-      if (!files || !files.length) {
-        previewEl.classList.add("hidden");
-        actionsEl.classList.add("hidden");
-        return;
-      }
-      currentRows = buildBulkPreview(files, type);
-      renderBulkPreview(currentRows, previewEl);
-      actionsEl.classList.remove("hidden");
-    });
-
-    confirmBtn.addEventListener("click", async () => {
-      if (!currentRows.length) return;
-      const count = await applyBulkCertFiles(currentRows, type);
-      persist();
-      render();
-      showToast(`${count} ${CERTIFICATES[type].label} file(s) attached to employees.`);
-      inputEl.value = "";
-      previewEl.classList.add("hidden");
-      actionsEl.classList.add("hidden");
-      currentRows = [];
-    });
-
-    clearBtn.addEventListener("click", () => {
-      inputEl.value = "";
-      previewEl.classList.add("hidden");
-      actionsEl.classList.add("hidden");
-      currentRows = [];
-    });
-  });
-})();
-
-// ─────────────────────────────────────────────────────────────────────────────
-
-certificateForm.elements.issueDate.addEventListener("change", (event) => {
-  const issueDate = event.target.value;
-  const type = certificateForm.elements.type.value;
-  if (issueDate && type) {
-    certificateForm.elements.expiryDate.value = calculateExpiryDate(issueDate, CERTIFICATES[type].validYears);
-  }
-});
-certificateForm.elements.type.addEventListener("change", (event) => {
-  const issueDate = certificateForm.elements.issueDate.value;
-  const type = event.target.value;
-  if (issueDate && type) {
-    certificateForm.elements.expiryDate.value = calculateExpiryDate(issueDate, CERTIFICATES[type].validYears);
-  }
-});
-
-function loadState() {
-  const saved = localStorage.getItem(STORAGE_KEY);
-  if (!saved) {
-    return {
-      employees: [],
-      settings: { ...defaultSettings },
-    };
-  }
-
-  try {
-    const parsed = JSON.parse(saved);
-    return {
-      employees: (parsed.employees || []).map(normalizeEmployee),
-      settings: normalizeSettings(parsed.settings || {}),
-    };
-  } catch {
-    return {
-      employees: [],
-      settings: { ...defaultSettings },
-    };
-  }
-}
-
-function loadSession() {
-  try {
-    return JSON.parse(localStorage.getItem(SESSION_KEY));
-  } catch {
-    return null;
-  }
-}
-
-function normalizeEmployee(employee) {
-  return {
-    ...employee,
-    certificates: {
-      ...createEmptyCertificates(),
-      ...(employee.certificates || {}),
-    },
-  };
-}
-
-function normalizeSettings(settings = {}) {
-  return {
-    ...defaultSettings,
-    ...settings,
-    alertsEmail: settings.alertsEmail || settings.kitchenManagerEmail || defaultSettings.alertsEmail,
-    reminderDays: Number(settings.reminderDays || settings.finalReminder || defaultSettings.reminderDays),
-  };
-}
-
-function createEmptyCertificates() {
-  return {
-    bfs: {},
-    ohc: {},
-  };
-}
-
-function persist() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-}
-
-function formData(form) {
-  return Object.fromEntries(new FormData(form).entries());
-}
-
+// ── Render ────────────────────────────────────────────────────────────────────
 function render() {
-  const isSignedIn = Boolean(session?.email);
-  loginView.classList.toggle("hidden", isSignedIn);
-  appShell.classList.toggle("hidden", !isSignedIn);
-  document.getElementById("signedInEmail").textContent = session?.email || "Not signed in";
-
-  if (!isSignedIn) return;
-
-  renderCertificateEmployeeOptions();
-  renderEmployeeFilterOptions();
+  const ok = Boolean(session?.email);
+  loginView.classList.toggle("hidden", ok);
+  appShell.classList.toggle("hidden", !ok);
+  document.getElementById("signedInEmail").textContent = session?.email || "—";
+  if (!ok) return;
+  renderDeptFilterOptions();
   renderDashboard();
-  renderEmployeeRows();
-  renderCertificateRows();
+  renderStaffRows();
   renderAlertSettings();
   renderAlertQueue();
-  renderReportSummary();
-  renderReportRows();
 }
 
-function renderCertificateEmployeeOptions() {
-  const select = certificateForm.elements.employeeId;
-  select.innerHTML = state.employees.length
-    ? state.employees
-        .map((employee) => `<option value="${employee.id}">${escapeHtml(employee.name)} (${escapeHtml(employee.employeeId)})</option>`)
-        .join("")
-    : '<option value="">Add employees first</option>';
-}
-
-function renderEmployeeFilterOptions() {
-  const currentDepartment = employeeDepartmentFilter.value || "all";
-  const departments = [...new Set(state.employees.map((employee) => employee.department).filter(Boolean))].sort((a, b) => a.localeCompare(b));
-  employeeDepartmentFilter.innerHTML = [
-    '<option value="all">All departments</option>',
-    ...departments.map((department) => `<option value="${escapeHtml(department)}">${escapeHtml(department)}</option>`),
-  ].join("");
-  employeeDepartmentFilter.value = departments.includes(currentDepartment) ? currentDepartment : "all";
+function renderDeptFilterOptions() {
+  const cur = employeeDeptFilter.value || "all";
+  const depts = [...new Set(state.employees.map(e => e.department).filter(Boolean))].sort((a,b) => a.localeCompare(b));
+  employeeDeptFilter.innerHTML = ['<option value="all">All departments</option>', ...depts.map(d => `<option value="${escHtml(d)}">${escHtml(d)}</option>`)].join("");
+  employeeDeptFilter.value = depts.includes(cur) ? cur : "all";
 }
 
 function renderDashboard() {
-  const summaries = getCertificateSummaries();
-  const statusCounts = countBy(summaries, "status");
-  const urgentItems = summaries
-    .filter((item) => item.status === "Expired" || item.status === "Expiring in 30 Days")
-    .sort((a, b) => a.daysRemaining - b.daysRemaining);
-
-  const urgentCount = (statusCounts.Expired || 0) + (statusCounts["Expiring in 30 Days"] || 0);
+  const sums = getCertSummaries();
+  const by = countBy(sums, "status");
+  const urgent = sums.filter(s => s.status === "Expired" || s.status === "Expiring in 30 Days").sort((a,b) => a.daysLeft - b.daysLeft);
+  const uc = (by.Expired||0) + (by["Expiring in 30 Days"]||0);
   document.getElementById("employeeMetric").textContent = state.employees.length;
-  document.getElementById("validMetric").textContent = statusCounts.Valid || 0;
-  document.getElementById("ninetyMetric").textContent = statusCounts["Expiring in 90 Days"] || 0;
-  document.getElementById("urgentMetric").textContent = urgentCount;
-  document.getElementById("attentionCount").textContent = `${urgentItems.length} items`;
+  document.getElementById("validMetric").textContent    = by.Valid || 0;
+  document.getElementById("ninetyMetric").textContent   = by["Expiring in 90 Days"] || 0;
+  document.getElementById("urgentMetric").textContent   = uc;
+  document.getElementById("attentionCount").textContent = `${urgent.length} items`;
+  const pill = document.getElementById("overallStatus");
+  pill.textContent = uc ? "Action Needed" : "Compliant";
+  pill.classList.toggle("risk", Boolean(uc));
 
-  const overallStatus = document.getElementById("overallStatus");
-  overallStatus.textContent = urgentCount ? "Action Needed" : "Compliant";
-  overallStatus.classList.toggle("risk", Boolean(urgentCount));
+  setRows("attentionRows", urgent.slice(0,8).map(s => `<tr>
+    <td>${escHtml(s.emp.name)}<br><small>${escHtml(s.emp.employeeId)}</small></td>
+    <td>${escHtml(s.cert.label)}</td>
+    <td>${fmtDate(s.expiryDate)}</td>
+    <td>${badge(s.status)}</td>
+    <td><a class="table-link" href="${mailto(s)}">Email Alert</a></td>
+  </tr>`), 5, "No urgent renewals.");
 
-  const rows = urgentItems.slice(0, 8).map((item) => `<tr>
-    <td>${escapeHtml(item.employee.name)}<br><small>${escapeHtml(item.employee.employeeId)}</small></td>
-    <td>${escapeHtml(item.certificate.label)}</td>
-    <td>${formatDateOnly(item.expiryDate)}</td>
-    <td>${statusBadge(item.status)}</td>
-    <td><a class="table-link" href="${createMailto(item)}">Email ${escapeHtml(getAlertRoute(item.employee).label)}</a></td>
-  </tr>`);
-  setRows("attentionRows", rows, 5, "No expired or 30-day certificate renewals.");
-
-  renderDepartmentRisk(summaries);
-}
-
-function renderDepartmentRisk(summaries) {
-  const grouped = summaries.reduce((groups, item) => {
-    const department = item.employee.department || "Unassigned";
-    groups[department] ||= { department, total: 0, urgent: 0, warning: 0 };
-    groups[department].total += 1;
-    if (item.status === "Expired" || item.status === "Expiring in 30 Days") groups[department].urgent += 1;
-    if (item.status === "Expiring in 90 Days") groups[department].warning += 1;
-    return groups;
+  // dept risk
+  const grouped = sums.reduce((g, s) => {
+    const d = s.emp.department || "Unassigned";
+    g[d] ||= { d, total:0, urgent:0, warn:0 };
+    g[d].total++;
+    if (s.status === "Expired" || s.status === "Expiring in 30 Days") g[d].urgent++;
+    if (s.status === "Expiring in 90 Days") g[d].warn++;
+    return g;
   }, {});
-
-  const items = Object.values(grouped).sort((a, b) => b.urgent - a.urgent || b.warning - a.warning || a.department.localeCompare(b.department));
-  document.getElementById("departmentRiskList").innerHTML = items.length
-    ? items
-        .map(
-          (item) => `<div class="risk-item">
-            <strong>${escapeHtml(item.department)}</strong>
-            <span>${item.urgent} urgent, ${item.warning} due soon, ${item.total} total certificates</span>
-          </div>`,
-        )
-        .join("")
-    : '<div class="empty-state">No employee records yet.</div>';
+  document.getElementById("departmentRiskList").innerHTML = Object.values(grouped).sort((a,b)=>b.urgent-a.urgent).map(x =>
+    `<div class="risk-item"><strong>${escHtml(x.d)}</strong><span>${x.urgent} urgent · ${x.warn} due soon · ${x.total} total</span></div>`
+  ).join("") || '<div class="empty-state">No records yet.</div>';
 }
 
-function renderEmployeeRows() {
-  const query = employeeSearch.value.trim().toLowerCase();
-  const department = employeeDepartmentFilter.value;
-  const status = employeeStatusFilter.value;
-  const employees = state.employees.filter((employee) => {
-    const searchable = [employee.name, employee.employeeId, employee.department, employee.position, employee.email, employee.phone].join(" ").toLowerCase();
-    const summaries = Object.keys(CERTIFICATES).map((type) => getCertificateSummary(employee, type));
-    const matchesQuery = searchable.includes(query);
-    const matchesDepartment = department === "all" || employee.department === department;
-    const matchesStatus =
-      status === "all" ||
-      summaries.some((item) => {
-        if (status === "Expiring") return item.status === "Expiring in 30 Days" || item.status === "Expiring in 90 Days";
-        return item.status === status;
-      });
-    return matchesQuery && matchesDepartment && matchesStatus;
+function renderStaffRows() {
+  const q    = employeeSearch.value.trim().toLowerCase();
+  const dept = employeeDeptFilter.value;
+  const stat = employeeStatusFilter.value;
+
+  const emps = state.employees.filter(e => {
+    const searchable = [e.name, e.employeeId, e.department].join(" ").toLowerCase();
+    const sums = Object.keys(CERTIFICATES).map(t => getCertSummary(e,t));
+    const matchQ    = searchable.includes(q);
+    const matchDept = dept === "all" || e.department === dept;
+    const matchStat = stat === "all" || sums.some(s => {
+      if (stat === "Expiring") return s.status === "Expiring in 30 Days" || s.status === "Expiring in 90 Days";
+      return s.status === stat;
+    });
+    return matchQ && matchDept && matchStat;
   });
 
-  const rows = employees.map((employee) => {
-    const bfs = getCertificateSummary(employee, "bfs");
-    const ohc = getCertificateSummary(employee, "ohc");
+  setRows("staffRows", emps.map(e => {
+    const bfs = getCertSummary(e, "bfs");
+    const ohc = getCertSummary(e, "ohc");
     return `<tr>
-      <td><strong>${escapeHtml(employee.name)}</strong></td>
-      <td>${escapeHtml(employee.employeeId)}</td>
-      <td>${escapeHtml(employee.department)}</td>
-      <td>${escapeHtml(employee.position)}</td>
-      <td>${escapeHtml(employee.email)}<br><small>${escapeHtml(employee.phone)}</small></td>
-      <td>${compactCertificateStatus("BFS", bfs.status)} ${compactCertificateStatus("OHC", ohc.status)}</td>
+      <td><strong>${escHtml(e.name)}</strong></td>
+      <td>${escHtml(e.employeeId)}</td>
+      <td>${escHtml(e.department)}</td>
+      <td>${badge(bfs.status)}</td>
+      <td>${fmtDate(bfs.expiryDate)}</td>
+      <td>${fileLink(bfs.record.file)} <button class="text-btn" type="button" data-action="edit-cert" data-eid="${e.id}" data-type="bfs">Edit</button></td>
+      <td>${badge(ohc.status)}</td>
+      <td>${fmtDate(ohc.expiryDate)}</td>
+      <td>${fileLink(ohc.record.file)} <button class="text-btn" type="button" data-action="edit-cert" data-eid="${e.id}" data-type="ohc">Edit</button></td>
       <td class="row-actions">
-        <button class="text-btn" type="button" data-action="edit-employee" data-id="${employee.id}">Edit</button>
-        <button class="text-btn danger" type="button" data-action="remove-employee" data-id="${employee.id}">Remove</button>
+        <button class="text-btn" type="button" data-action="edit-emp" data-id="${e.id}">Edit</button>
+        <button class="text-btn danger" type="button" data-action="del-emp" data-id="${e.id}">Remove</button>
       </td>
     </tr>`;
-  });
-
-  setRows("employeeRows", rows, 7, "No employees match the current search.");
-  wireRowActions();
-}
-
-function renderCertificateRows() {
-  const filter = statusFilter.value;
-  const query = certSearch.value.trim().toLowerCase();
-  const summaries = getCertificateSummaries().filter((item) => {
-    const statusMatch = filter === "all" || item.status === filter;
-    const searchMatch = !query ||
-      item.employee.name.toLowerCase().includes(query) ||
-      item.employee.employeeId.toLowerCase().includes(query);
-    return statusMatch && searchMatch;
-  });
-  const rows = summaries.map((item) => `<tr>
-    <td>${escapeHtml(item.employee.name)}<br><small>${escapeHtml(item.employee.employeeId)}</small></td>
-    <td>${escapeHtml(item.employee.department)}</td>
-    <td>${escapeHtml(item.certificate.label)}<br><small>${escapeHtml(item.certificate.fullName)}</small></td>
-    <td>${formatDateOnly(item.issueDate)}</td>
-    <td>${formatDateOnly(item.expiryDate)}</td>
-    <td>${statusBadge(item.status)}</td>
-    <td>${renderFileLink(item.record.file)}</td>
-    <td class="row-actions">
-      <button class="text-btn" type="button" data-action="edit-certificate" data-employee-id="${item.employee.id}" data-type="${item.type}">Edit</button>
-      <button class="text-btn danger" type="button" data-action="remove-certificate" data-employee-id="${item.employee.id}" data-type="${item.type}">Clear</button>
-    </td>
-  </tr>`);
-
-  setRows("certificateRows", rows, 8, "No certificates found for this filter.");
-  wireRowActions();
+  }), 10, "No employees match this filter.");
+  wireActions();
 }
 
 function renderAlertSettings() {
-  alertSettingsForm.elements.alertsEmail.value = state.settings.alertsEmail;
+  alertSettingsForm.elements.alertsEmail.value  = state.settings.alertsEmail;
   alertSettingsForm.elements.reminderDays.value = String(state.settings.reminderDays);
 }
 
 function renderAlertQueue() {
   const items = getAlertItems();
   document.getElementById("alertQueue").innerHTML = items.length
-    ? items
-        .map(
-          (item) => `<div class="alert-item">
-            <div>
-              <strong>${escapeHtml(item.employee.name)} - ${escapeHtml(item.certificate.label)} ${escapeHtml(item.status.toLowerCase())}</strong>
-              <span>${escapeHtml(item.employee.department)} / expires ${formatDateOnly(item.expiryDate)} / ${formatDays(item.daysRemaining)} / routes to ${escapeHtml(getAlertRoute(item.employee).label)}</span>
-            </div>
-            <div class="alert-actions">
-              <a class="primary-btn" href="${createMailto(item)}">Prepare Alert</a>
-            </div>
-          </div>`,
-        )
-        .join("")
-    : '<div class="empty-state">No alert emails are due.</div>';
+    ? items.map(s => `<div class="alert-item">
+        <div>
+          <strong>${escHtml(s.emp.name)} · ${escHtml(s.cert.label)} ${escHtml(s.status.toLowerCase())}</strong>
+          <span>${escHtml(s.emp.department)} · expires ${fmtDate(s.expiryDate)} · ${fmtDays(s.daysLeft)}</span>
+        </div>
+        <div class="alert-actions"><a class="primary-btn" href="${mailto(s)}">Prepare Alert</a></div>
+      </div>`).join("")
+    : '<div class="empty-state">No alerts due.</div>';
 }
 
-function renderReportSummary() {
-  const summaries = getCertificateSummaries();
-  const total = summaries.length;
-  const valid = summaries.filter((item) => item.status === "Valid").length;
-  const needsAction = summaries.filter((item) => item.status === "Expired" || item.status === "Missing" || item.status === "Expiring in 30 Days").length;
-  const complianceRate = total ? Math.round((valid / total) * 100) : 0;
-  const painPoint = getPainPoint(summaries);
-  const weakestDepartment = getWeakestDepartment(summaries);
-
-  document.getElementById("complianceRateMetric").textContent = `${complianceRate}%`;
-  document.getElementById("complianceRateDetail").textContent = `${valid} of ${total} certificates valid`;
-  document.getElementById("needsActionMetric").textContent = needsAction;
-  document.getElementById("painPointMetric").textContent = painPoint.title;
-  document.getElementById("painPointDetail").textContent = painPoint.detail;
-  document.getElementById("weakestDepartmentMetric").textContent = weakestDepartment.title;
-  document.getElementById("weakestDepartmentDetail").textContent = weakestDepartment.detail;
+// ── Certificate logic ─────────────────────────────────────────────────────────
+function getCertSummaries() {
+  return state.employees.flatMap(e => Object.keys(CERTIFICATES).map(t => getCertSummary(e,t)));
 }
-
-function renderReportRows() {
-  document.getElementById("reportCount").textContent = `${state.employees.length} rows`;
-  const rows = state.employees.map((employee) => {
-    const bfs = getCertificateSummary(employee, "bfs");
-    const ohc = getCertificateSummary(employee, "ohc");
-    return `<tr>
-      <td>${escapeHtml(employee.employeeId)}</td>
-      <td>${escapeHtml(employee.name)}</td>
-      <td>${escapeHtml(employee.department)}</td>
-      <td>${statusBadge(bfs.status)}</td>
-      <td>${formatDateOnly(bfs.expiryDate)}</td>
-      <td>${statusBadge(ohc.status)}</td>
-      <td>${formatDateOnly(ohc.expiryDate)}</td>
-    </tr>`;
-  });
-  setRows("reportRows", rows, 7, "No employee records to export.");
+function getCertSummary(emp, type) {
+  const cert   = CERTIFICATES[type];
+  const record = emp.certificates[type] || {};
+  const issueDate  = record.issueDate  || "";
+  const expiryDate = record.expiryDate || (issueDate ? calcExpiry(issueDate, cert.validYears) : "");
+  const daysLeft   = expiryDate ? daysUntil(expiryDate) : Infinity;
+  return { emp, type, cert, record, issueDate, expiryDate, daysLeft, status: certStatus(expiryDate) };
 }
-
-function getCertificateSummaries() {
-  return state.employees.flatMap((employee) => Object.keys(CERTIFICATES).map((type) => getCertificateSummary(employee, type)));
-}
-
-function getCertificateSummary(employee, type) {
-  const certificate = CERTIFICATES[type];
-  const record = employee.certificates[type] || {};
-  const issueDate = record.issueDate || "";
-  const expiryDate = record.expiryDate || (issueDate ? calculateExpiryDate(issueDate, certificate.validYears) : "");
-  const daysRemaining = expiryDate ? daysUntil(expiryDate) : Number.POSITIVE_INFINITY;
-  const status = getCertificateStatus(expiryDate);
-
-  return {
-    employee,
-    type,
-    certificate,
-    record,
-    issueDate,
-    expiryDate,
-    daysRemaining,
-    status,
-  };
-}
-
-function getCertificateStatus(expiryDate) {
-  if (!expiryDate) return "Missing";
-  const days = daysUntil(expiryDate);
-  if (days < 0) return "Expired";
-  if (days <= 30) return "Expiring in 30 Days";
-  if (days <= 90) return "Expiring in 90 Days";
+function certStatus(exp) {
+  if (!exp) return "Missing";
+  const d = daysUntil(exp);
+  if (d < 0)  return "Expired";
+  if (d <= 30) return "Expiring in 30 Days";
+  if (d <= 90) return "Expiring in 90 Days";
   return "Valid";
 }
-
-function daysUntil(dateString) {
-  const today = startOfDay(new Date());
-  const target = startOfDay(new Date(`${dateString}T00:00:00`));
-  return Math.ceil((target - today) / 86400000);
+function daysUntil(ds) {
+  const t = d => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  return Math.ceil((t(new Date(`${ds}T00:00:00`)) - t(new Date())) / 86400000);
+}
+function calcExpiry(issue, years) {
+  const d = new Date(`${issue}T00:00:00`);
+  d.setFullYear(d.getFullYear() + years);
+  return d.toISOString().slice(0,10);
 }
 
-function startOfDay(date) {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
-}
-
-function calculateExpiryDate(issueDate, years) {
-  const date = new Date(`${issueDate}T00:00:00`);
-  date.setFullYear(date.getFullYear() + years);
-  return date.toISOString().slice(0, 10);
-}
-
+// ── Alert helpers ─────────────────────────────────────────────────────────────
 function getAlertItems() {
-  const reminderDays = Number(state.settings.reminderDays);
-  return getCertificateSummaries()
-    .filter((item) => item.status !== "Missing")
-    .filter((item) => item.daysRemaining < 0 || item.daysRemaining <= reminderDays)
-    .sort((a, b) => a.daysRemaining - b.daysRemaining);
+  return getCertSummaries()
+    .filter(s => s.status !== "Missing" && (s.daysLeft < 0 || s.daysLeft <= state.settings.reminderDays))
+    .sort((a,b) => a.daysLeft - b.daysLeft);
 }
-
 function sendEmailAlert() {
   const items = getAlertItems();
-  const email = state.settings.alertsEmail;
-  if (!items.length) {
-    showToast("No certificate alerts are due for the selected reminder.");
-    return;
-  }
-  const subject = encodeURIComponent(`UAE Kitchen certificate alerts - ${items.length} items`);
-  const body = encodeURIComponent(
-    [
-      "Hello Compliance Team,",
-      "",
-      `The following ${items.length} certificate renewal(s) need attention (due within ${state.settings.reminderDays} days or overdue):`,
-      "",
-      items
-        .map(
-          (item) =>
-            `- ${item.employee.name} (${item.employee.employeeId}) - ${item.certificate.label}: ${item.status} (Expires: ${formatDateOnly(item.expiryDate)}, ${formatDays(item.daysRemaining)})`
-        )
-        .join("\n"),
-      "",
-      "Please arrange renewals and update the portal once the new certificate is issued.",
-      "",
-      "UAE Kitchen - Compliance Portal",
-    ].join("\n")
-  );
-  window.location.href = `mailto:${encodeURIComponent(email)}?subject=${subject}&body=${body}`;
-  showToast("Opening mail client...");
+  if (!items.length) { showToast("No alerts due."); return; }
+  const subj = encodeURIComponent(`UAE Kitchen certificate alerts – ${items.length} items`);
+  const body = encodeURIComponent([
+    "Hello Compliance Team,", "",
+    `${items.length} certificate renewal(s) need attention (within ${state.settings.reminderDays} days or overdue):`, "",
+    items.map(s => `- ${s.emp.name} (${s.emp.employeeId}) · ${s.cert.label}: ${s.status} · Expires: ${fmtDate(s.expiryDate)}`).join("\n"),
+    "", "UAE Kitchen – Compliance Portal",
+  ].join("\n"));
+  window.location.href = `mailto:${encodeURIComponent(state.settings.alertsEmail)}?subject=${subj}&body=${body}`;
+  showToast("Opening mail client…");
+}
+function mailto(s) {
+  const subj = encodeURIComponent(`${s.cert.label} certificate ${s.status.toLowerCase()} – ${s.emp.name}`);
+  const body = encodeURIComponent([`${s.emp.name}'s ${s.cert.fullName} is ${s.status.toLowerCase()}.`,`Employee ID: ${s.emp.employeeId}`,`Department: ${s.emp.department}`,`Expiry: ${fmtDate(s.expiryDate)}`,`${fmtDays(s.daysLeft)}`,"","UAE Kitchen – Compliance Portal"].join("\n"));
+  return `mailto:${encodeURIComponent(state.settings.alertsEmail)}?subject=${subj}&body=${body}`;
 }
 
-function createMailto(item) {
-  const email = state.settings.alertsEmail;
-  const subject = encodeURIComponent(`${item.certificate.label} certificate ${item.status.toLowerCase()} - ${item.employee.name}`);
-  const body = encodeURIComponent(
-    [
-      "Hello,",
-      "",
-      `${item.employee.name}'s ${item.certificate.fullName} (${item.certificate.label}) certificate is ${item.status.toLowerCase()}.`,
-      `Employee ID: ${item.employee.employeeId}`,
-      `Department: ${item.employee.department}`,
-      `Expiry date: ${formatDateOnly(item.expiryDate)}`,
-      `Time remaining: ${formatDays(item.daysRemaining)}`,
-      "",
-      "Please arrange renewal and update the portal once the new certificate is issued.",
-      "",
-      "UAE Kitchen - Compliance Portal",
-    ].join("\n")
-  );
-  return `mailto:${encodeURIComponent(email)}?subject=${subject}&body=${body}`;
-}
-
-function getAlertRoute(employee) {
-  return { type: "alerts", label: "Compliance Email", email: state.settings.alertsEmail };
-}
-
-function getAlertRecipients() {
-  return [state.settings.alertsEmail].filter(Boolean);
-}
-
-function getPainPoint(summaries) {
-  const issueCounts = summaries.reduce((counts, item) => {
-    if (item.status === "Valid") return counts;
-    const key = `${item.certificate.label} ${item.status}`;
-    counts[key] = (counts[key] || 0) + 1;
-    return counts;
-  }, {});
-  const top = Object.entries(issueCounts).sort((a, b) => b[1] - a[1])[0];
-  if (!top) return { title: "None", detail: "No certificate issues found" };
-  return { title: top[0], detail: `${top[1]} certificate${top[1] === 1 ? "" : "s"} need attention` };
-}
-
-function getWeakestDepartment(summaries) {
-  const departments = summaries.reduce((groups, item) => {
-    const department = item.employee.department || "Unassigned";
-    groups[department] ||= { urgent: 0, total: 0 };
-    groups[department].total += 1;
-    if (item.status === "Expired" || item.status === "Missing" || item.status === "Expiring in 30 Days") groups[department].urgent += 1;
-    return groups;
-  }, {});
-  const top = Object.entries(departments).sort((a, b) => b[1].urgent - a[1].urgent || b[1].total - a[1].total)[0];
-  if (!top || !top[1].urgent) return { title: "None", detail: "No urgent department risk" };
-  return { title: top[0], detail: `${top[1].urgent} of ${top[1].total} certificates need action` };
-}
-
-function downloadEmployeeTemplate() {
-  const rows = [
-    ["employeeId", "name", "department", "position", "email", "phone", "bfsIssueDate", "ohcIssueDate"],
-    ["UK-1001", "Sample Employee", "Kitchen", "Commis Chef", "sample.employee@calo.app", "+971 50 000 0000", "2026-01-15", "2026-03-01"],
-    ["UK-1002", "Dispatch Sample", "Dispatch", "Driver", "dispatch.sample@calo.app", "+971 50 000 0001", "2025-09-20", "2026-02-10"],
-  ];
-  downloadTextFile(`uae-kitchen-employee-template-${new Date().toISOString().slice(0, 10)}.csv`, rows.map((row) => row.map(csvEscape).join(",")).join("\n"), "text/csv;charset=utf-8");
-}
-
-function importEmployeesFromCsv(text) {
-  const rows = parseCsv(text).filter((row) => row.some((cell) => cell.trim()));
-  if (rows.length < 2) return { added: 0, updated: 0, skipped: 0 };
-  const headers = rows[0].map((header) => normalizeHeader(header));
-  let added = 0;
-  let updated = 0;
-  let skipped = 0;
-
-  rows.slice(1).forEach((row) => {
-    const record = headers.reduce((item, header, index) => {
-      item[header] = (row[index] || "").trim();
-      return item;
-    }, {});
-    if (!record.employeeid || !record.name || !record.department || !record.position || !record.email || !record.phone) {
-      skipped += 1;
-      return;
-    }
-
-    const existing = state.employees.find((employee) => employee.employeeId.toLowerCase() === record.employeeid.toLowerCase());
-    const certificates = existing?.certificates || createEmptyCertificates();
-    applyCsvCertificate(certificates, "bfs", record.bfsissuedate);
-    applyCsvCertificate(certificates, "ohc", record.ohcissuedate);
-
-    const employee = {
-      id: existing?.id || crypto.randomUUID(),
-      name: record.name,
-      employeeId: record.employeeid,
-      department: record.department,
-      position: record.position,
-      email: record.email.toLowerCase(),
-      phone: record.phone,
-      certificates,
-      createdAt: existing?.createdAt || new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    if (existing) {
-      state.employees = state.employees.map((item) => (item.id === existing.id ? employee : item));
-      updated += 1;
-    } else {
-      state.employees.unshift(employee);
-      added += 1;
-    }
-  });
-
-  return { added, updated, skipped };
-}
-
-function applyCsvCertificate(certificates, type, issueDate) {
-  if (!issueDate) return;
-  if (!isValidDateInput(issueDate)) return;
-  certificates[type] = {
-    issueDate,
-    expiryDate: calculateExpiryDate(issueDate, CERTIFICATES[type].validYears),
-    file: certificates[type]?.file || null,
-    updatedAt: new Date().toISOString(),
-  };
-}
-
-function parseCsv(text) {
-  const rows = [];
-  let row = [];
-  let cell = "";
-  let inQuotes = false;
-
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index];
-    const next = text[index + 1];
-    if (char === '"' && inQuotes && next === '"') {
-      cell += '"';
-      index += 1;
-    } else if (char === '"') {
-      inQuotes = !inQuotes;
-    } else if (char === "," && !inQuotes) {
-      row.push(cell);
-      cell = "";
-    } else if ((char === "\n" || char === "\r") && !inQuotes) {
-      if (char === "\r" && next === "\n") index += 1;
-      row.push(cell);
-      rows.push(row);
-      row = [];
-      cell = "";
-    } else {
-      cell += char;
-    }
-  }
-
-  row.push(cell);
-  rows.push(row);
-  return rows;
-}
-
-function normalizeHeader(value) {
-  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
-function isValidDateInput(value) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(new Date(`${value}T00:00:00`).getTime());
-}
-
-function editEmployee(employeeId) {
-  const employee = state.employees.find((item) => item.id === employeeId);
-  if (!employee) return;
-  employeeForm.elements.editingId.value = employee.id;
-  employeeForm.elements.name.value = employee.name;
-  employeeForm.elements.employeeId.value = employee.employeeId;
-  employeeForm.elements.department.value = employee.department;
-  employeeForm.elements.position.value = employee.position;
-  employeeForm.elements.email.value = employee.email;
-  employeeForm.elements.phone.value = employee.phone;
-  document.getElementById("employeeSubmitButton").textContent = "Save Changes";
+// ── Employee actions ──────────────────────────────────────────────────────────
+function editEmployee(id) {
+  const e = state.employees.find(x => x.id === id);
+  if (!e) return;
+  employeeForm.elements.editingId.value  = e.id;
+  employeeForm.elements.name.value       = e.name;
+  employeeForm.elements.employeeId.value = e.employeeId;
+  employeeForm.elements.department.value = e.department;
+  document.getElementById("employeeFormTitle").textContent     = `Editing: ${e.name}`;
+  document.getElementById("employeeSubmitButton").textContent  = "Save Changes";
   document.getElementById("cancelEmployeeEdit").classList.remove("hidden");
-  showView("employees");
+  showView("staff");
   employeeForm.elements.name.focus();
+  employeeForm.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+function deleteEmployee(id) {
+  const e = state.employees.find(x => x.id === id);
+  if (!e || !confirm(`Remove ${e.name}?`)) return;
+  state.employees = state.employees.filter(x => x.id !== id);
+  persist(); render(); showToast("Employee removed.");
+}
+function clearCertificate(empId, type) {
+  const e = state.employees.find(x => x.id === empId);
+  if (!e || !confirm(`Clear ${CERTIFICATES[type].label} for ${e.name}?`)) return;
+  e.certificates[type] = {}; e.updatedAt = new Date().toISOString();
+  persist(); render(); showToast("Certificate cleared.");
 }
 
-function removeEmployee(employeeId) {
-  const employee = state.employees.find((item) => item.id === employeeId);
-  if (!employee) return;
-  if (!confirm(`Remove ${employee.name} and their certificate records?`)) return;
-  state.employees = state.employees.filter((item) => item.id !== employeeId);
-  persist();
-  render();
-  showToast("Employee removed.");
-}
-
-function editCertificate(employeeId, type) {
-  const employee = state.employees.find((item) => item.id === employeeId);
-  if (!employee) return;
-  certificateForm.elements.employeeId.value = employeeId;
-  certificateForm.elements.type.value = type;
-  certificateForm.elements.issueDate.value = employee.certificates[type]?.issueDate || "";
-  certificateForm.elements.expiryDate.value = employee.certificates[type]?.expiryDate || "";
-  showView("certificates");
-  certificateForm.elements.issueDate.focus();
-}
-
-function removeCertificate(employeeId, type) {
-  const employee = state.employees.find((item) => item.id === employeeId);
-  if (!employee) return;
-  if (!employee.certificates[type]?.issueDate) {
-    showToast("There is no certificate to clear.");
-    return;
-  }
-  if (!confirm(`Clear ${CERTIFICATES[type].label} certificate for ${employee.name}?`)) return;
-  employee.certificates[type] = {};
-  employee.updatedAt = new Date().toISOString();
-  persist();
-  render();
-  showToast("Certificate cleared.");
-}
-
-function resetEmployeeForm() {
-  employeeForm.reset();
-  employeeForm.elements.editingId.value = "";
-  document.getElementById("employeeSubmitButton").textContent = "Add Employee";
-  document.getElementById("cancelEmployeeEdit").classList.add("hidden");
-}
-
-function showView(viewId) {
-  tabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.view === viewId));
-  views.forEach((view) => view.classList.toggle("active-view", view.id === viewId));
-}
-
-function wireRowActions() {
-  document.querySelectorAll("[data-action]").forEach((button) => {
-    if (button.dataset.bound) return;
-    button.dataset.bound = "true";
-    button.addEventListener("click", () => {
-      const action = button.dataset.action;
-      if (action === "edit-employee") editEmployee(button.dataset.id);
-      if (action === "remove-employee") removeEmployee(button.dataset.id);
-      if (action === "edit-certificate") editCertificate(button.dataset.employeeId, button.dataset.type);
-      if (action === "remove-certificate") removeCertificate(button.dataset.employeeId, button.dataset.type);
+function wireActions() {
+  document.querySelectorAll("[data-action]").forEach(btn => {
+    if (btn._wired) return; btn._wired = true;
+    btn.addEventListener("click", () => {
+      const a = btn.dataset.action;
+      if (a === "edit-emp")  editEmployee(btn.dataset.id);
+      if (a === "del-emp")   deleteEmployee(btn.dataset.id);
+      if (a === "edit-cert") showCertEdit(btn.dataset.eid, btn.dataset.type);
     });
   });
 }
 
-async function readCertificateFile(file) {
-  if (!file) return null;
-  const allowed = file.type === "application/pdf" || file.type.startsWith("image/");
-  if (!allowed) {
-    showToast("Upload a PDF or image certificate file.");
-    throw new Error("Unsupported file type");
-  }
-  return {
-    name: file.name,
-    type: file.type,
-    size: file.size,
-    dataUrl: await readFileAsDataUrl(file),
-    uploadedAt: new Date().toISOString(),
-  };
+function showView(id) {
+  tabs.forEach(t => t.classList.toggle("active", t.dataset.view === id));
+  views.forEach(v => v.classList.toggle("active-view", v.id === id));
 }
 
-function readFileAsDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.addEventListener("load", () => resolve(reader.result));
-    reader.addEventListener("error", () => reject(reader.error));
-    reader.readAsDataURL(file);
+// ── CSV import ────────────────────────────────────────────────────────────────
+function importFromCsv(text) {
+  const rows = parseCsv(text).filter(r => r.some(c => c.trim()));
+  if (rows.length < 2) return { added:0, updated:0, skipped:0 };
+  const hdrs = rows[0].map(h => h.toLowerCase().replace(/[^a-z0-9]/g,""));
+  let added=0, updated=0, skipped=0;
+  rows.slice(1).forEach(row => {
+    const rec = hdrs.reduce((o,h,i) => { o[h]=(row[i]||"").trim(); return o; }, {});
+    if (!rec.employeeid || !rec.name || !rec.department) { skipped++; return; }
+    const existing = state.employees.find(e => e.employeeId.toLowerCase() === rec.employeeid.toLowerCase());
+    const certs = existing?.certificates || createEmptyCertificates();
+    if (rec.bfsissuedate && isValidDate(rec.bfsissuedate)) certs.bfs = { issueDate: rec.bfsissuedate, expiryDate: calcExpiry(rec.bfsissuedate, 2), file: certs.bfs?.file||null, updatedAt: new Date().toISOString() };
+    if (rec.ohcissuedate && isValidDate(rec.ohcissuedate)) certs.ohc = { issueDate: rec.ohcissuedate, expiryDate: calcExpiry(rec.ohcissuedate, 1), file: certs.ohc?.file||null, updatedAt: new Date().toISOString() };
+    const emp = { id: existing?.id||crypto.randomUUID(), name: rec.name, employeeId: rec.employeeid, department: rec.department, certificates: certs, createdAt: existing?.createdAt||new Date().toISOString(), updatedAt: new Date().toISOString() };
+    if (existing) { state.employees = state.employees.map(x => x.id===existing.id?emp:x); updated++; }
+    else { state.employees.unshift(emp); added++; }
   });
+  return { added, updated, skipped };
 }
 
-function renderFileLink(file) {
-  if (!file?.dataUrl) return '<span class="muted">No file</span>';
-  return `<a class="table-link" href="${file.dataUrl}" download="${escapeHtml(file.name)}">${escapeHtml(file.name)}</a>`;
+function downloadTemplate() {
+  const rows = [
+    ["employeeId","name","department","bfsIssueDate","ohcIssueDate"],
+    ["CK-1001","Sample Employee","Kitchen","2026-01-15","2026-03-01"],
+  ];
+  downloadFile(`uae-kitchen-template-${today()}.csv`, rows.map(r=>r.map(csvEsc).join(",")).join("\n"), "text/csv;charset=utf-8");
 }
 
+// ── Excel export ──────────────────────────────────────────────────────────────
 function exportExcel() {
-  const rows = state.employees.map((employee) => {
-    const bfs = getCertificateSummary(employee, "bfs");
-    const ohc = getCertificateSummary(employee, "ohc");
-    return [
-      employee.employeeId,
-      employee.name,
-      employee.department,
-      employee.position,
-      employee.email,
-      employee.phone,
-      bfs.issueDate,
-      bfs.expiryDate,
-      bfs.status,
-      bfs.record.file?.name || "",
-      ohc.issueDate,
-      ohc.expiryDate,
-      ohc.status,
-      ohc.record.file?.name || "",
-    ];
+  const hdrs = ["Employee ID","Name","Department","BFS Status","BFS Expiry","BFS File","OHC Status","OHC Expiry","OHC File"];
+  const rows = state.employees.map(e => {
+    const bfs = getCertSummary(e,"bfs"), ohc = getCertSummary(e,"ohc");
+    return [e.employeeId,e.name,e.department,bfs.status,bfs.expiryDate,bfs.record.file?.name||"",ohc.status,ohc.expiryDate,ohc.record.file?.name||""];
   });
-
-  const headers = [
-    "Employee ID",
-    "Name",
-    "Department",
-    "Position",
-    "Email",
-    "Phone",
-    "BFS Issue Date",
-    "BFS Expiry Date",
-    "BFS Status",
-    "BFS File",
-    "OHC Issue Date",
-    "OHC Expiry Date",
-    "OHC Status",
-    "OHC File",
-  ];
-  const table = `<table><thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr></thead><tbody>${rows
-    .map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`)
-    .join("")}</tbody></table>`;
-  const html = `<!doctype html><html><head><meta charset="UTF-8"></head><body>${table}</body></html>`;
-  downloadTextFile(`uae-kitchen-certificate-register-${new Date().toISOString().slice(0, 10)}.xls`, html, "application/vnd.ms-excel;charset=utf-8");
-  showToast("Excel export prepared.");
+  const tbl = `<table><thead><tr>${hdrs.map(h=>`<th>${escHtml(h)}</th>`).join("")}</tr></thead><tbody>${rows.map(r=>`<tr>${r.map(c=>`<td>${escHtml(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+  downloadFile(`uae-kitchen-export-${today()}.xls`,`<!doctype html><html><head><meta charset="UTF-8"></head><body>${tbl}</body></html>`,"application/vnd.ms-excel;charset=utf-8");
+  showToast("Excel export ready.");
 }
 
-function downloadTextFile(fileName, content, type) {
-  const blob = new Blob([content], { type });
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob);
-  link.download = fileName;
-  link.click();
-  URL.revokeObjectURL(link.href);
-}
-
+// ── Demo data ─────────────────────────────────────────────────────────────────
 function seedDemoData() {
-  const today = new Date();
-  const dateIn = (days) => {
-    const date = new Date(today);
-    date.setDate(date.getDate() + days);
-    return date.toISOString().slice(0, 10);
+  const di = days => { const d=new Date(); d.setDate(d.getDate()+days); return d.toISOString().slice(0,10); };
+  const mk = (type, offset, fn) => {
+    const exp = di(offset);
+    const iss = (() => { const d=new Date(`${exp}T00:00:00`); d.setFullYear(d.getFullYear()-CERTIFICATES[type].validYears); return d.toISOString().slice(0,10); })();
+    return { issueDate:iss, expiryDate:exp, file:{name:fn,type:"application/pdf",size:0,dataUrl:"data:application/pdf;base64,",uploadedAt:new Date().toISOString()}, updatedAt:new Date().toISOString() };
   };
-  const issueFor = (expiry, years) => {
-    const date = new Date(`${expiry}T00:00:00`);
-    date.setFullYear(date.getFullYear() - years);
-    return date.toISOString().slice(0, 10);
-  };
-  const makeCert = (type, expiryOffset, fileName) => {
-    const expiryDate = dateIn(expiryOffset);
-    return {
-      issueDate: issueFor(expiryDate, CERTIFICATES[type].validYears),
-      expiryDate,
-      file: {
-        name: fileName,
-        type: "application/pdf",
-        size: 0,
-        dataUrl: "data:application/pdf;base64,",
-        uploadedAt: new Date().toISOString(),
-      },
-      updatedAt: new Date().toISOString(),
-    };
-  };
-
   state.employees = [
-    {
-      id: crypto.randomUUID(),
-      name: "Aisha Rahman",
-      employeeId: "CK-1001",
-      department: "Kitchen",
-      position: "Line Supervisor",
-      email: "aisha.rahman@countrykitchen.ae",
-      phone: "+971 50 100 1001",
-      certificates: {
-        bfs: makeCert("bfs", 140, "aisha-bfs.pdf"),
-        ohc: makeCert("ohc", 24, "aisha-ohc.pdf"),
-      },
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    },
-    {
-      id: crypto.randomUUID(),
-      name: "Khalid Mansoor",
-      employeeId: "CK-1002",
-      department: "Dispatch",
-      position: "Driver",
-      email: "khalid.mansoor@countrykitchen.ae",
-      phone: "+971 50 100 1002",
-      certificates: {
-        bfs: makeCert("bfs", -12, "khalid-bfs.pdf"),
-        ohc: makeCert("ohc", 82, "khalid-ohc.pdf"),
-      },
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    },
-    {
-      id: crypto.randomUUID(),
-      name: "Maria Santos",
-      employeeId: "CK-1003",
-      department: "Kitchen",
-      position: "QA Officer",
-      email: "maria.santos@countrykitchen.ae",
-      phone: "+971 50 100 1003",
-      certificates: {
-        bfs: makeCert("bfs", 410, "maria-bfs.pdf"),
-        ohc: makeCert("ohc", 9, "maria-ohc.pdf"),
-      },
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    },
-    {
-      id: crypto.randomUUID(),
-      name: "Omar Faris",
-      employeeId: "CK-1004",
-      department: "Kitchen",
-      position: "Commis Chef",
-      email: "omar.faris@countrykitchen.ae",
-      phone: "+971 50 100 1004",
-      certificates: {
-        bfs: makeCert("bfs", 67, "omar-bfs.pdf"),
-        ohc: {},
-      },
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    },
+    { id:crypto.randomUUID(), name:"Aisha Rahman",   employeeId:"CK-1001", department:"Kitchen",  certificates:{bfs:mk("bfs",140,"CK-1001-bfs.pdf"), ohc:mk("ohc",24,"CK-1001-ohc.pdf")},  createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() },
+    { id:crypto.randomUUID(), name:"Khalid Mansoor", employeeId:"CK-1002", department:"Dispatch", certificates:{bfs:mk("bfs",-12,"CK-1002-bfs.pdf"), ohc:mk("ohc",82,"CK-1002-ohc.pdf")},  createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() },
+    { id:crypto.randomUUID(), name:"Maria Santos",   employeeId:"CK-1003", department:"Kitchen",  certificates:{bfs:mk("bfs",410,"CK-1003-bfs.pdf"), ohc:mk("ohc",9,"CK-1003-ohc.pdf")},   createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() },
+    { id:crypto.randomUUID(), name:"Omar Faris",     employeeId:"CK-1004", department:"Kitchen",  certificates:{bfs:mk("bfs",67,"CK-1004-bfs.pdf"),  ohc:{}},                                createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() },
   ];
-  persist();
-  render();
-  showToast("Sample compliance records loaded.");
+  persist(); render(); showToast("Sample data loaded.");
 }
 
-function setRows(targetId, rows, colspan, emptyMessage) {
-  document.getElementById(targetId).innerHTML = rows.length
-    ? rows.join("")
-    : `<tr><td colspan="${colspan}" class="empty-state">${emptyMessage}</td></tr>`;
+// ── Normalise helpers ─────────────────────────────────────────────────────────
+function normalizeEmployee(e) { return { ...e, certificates: { ...createEmptyCertificates(), ...(e.certificates||{}) } }; }
+function normalizeSettings(s) { return { ...defaultSettings, ...s, reminderDays: Number(s.reminderDays||defaultSettings.reminderDays) }; }
+function createEmptyCertificates() { return { bfs:{}, ohc:{} }; }
+function formData(form) { return Object.fromEntries(new FormData(form).entries()); }
+
+// ── DOM / render utilities ────────────────────────────────────────────────────
+function setRows(id, rows, cols, empty) {
+  document.getElementById(id).innerHTML = rows.length ? rows.join("") : `<tr><td colspan="${cols}" class="empty-state">${empty}</td></tr>`;
+}
+function countBy(arr, key) { return arr.reduce((c,i)=>{ c[i[key]]=(c[i[key]]||0)+1; return c; },{}); }
+function badge(status) {
+  const cls = status==="Valid"?"good":status==="Expiring in 90 Days"?"watch":status==="Expiring in 30 Days"?"warn":status==="Missing"?"neutral":"bad";
+  return `<span class="badge ${cls}">${escHtml(status)}</span>`;
+}
+function fmtDate(v) {
+  if (!v) return "—";
+  return new Intl.DateTimeFormat(undefined,{year:"numeric",month:"short",day:"numeric"}).format(new Date(`${v}T00:00:00`));
+}
+function fmtDays(d) {
+  if (!isFinite(d)) return "not recorded";
+  if (d < 0) return `${Math.abs(d)} days overdue`;
+  if (d === 0) return "expires today";
+  return `${d} days remaining`;
+}
+function fileLink(f) {
+  if (!f?.dataUrl) return '<span class="muted">—</span>';
+  return `<a class="table-link" href="${f.dataUrl}" download="${escHtml(f.name)}">${escHtml(f.name)}</a>`;
+}
+function escHtml(v) {
+  return String(v??"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;");
+}
+async function readCertFile(file) {
+  if (!file) return null;
+  if (file.type !== "application/pdf" && !file.type.startsWith("image/")) { showToast("Upload a PDF or image."); throw new Error("bad type"); }
+  return { name:file.name, type:file.type, size:file.size, dataUrl: await toDataUrl(file), uploadedAt: new Date().toISOString() };
+}
+function toDataUrl(file) {
+  return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=()=>rej(r.error); r.readAsDataURL(file); });
+}
+function downloadFile(name, content, type) {
+  const a = Object.assign(document.createElement("a"),{href:URL.createObjectURL(new Blob([content],{type})),download:name});
+  a.click(); URL.revokeObjectURL(a.href);
+}
+function parseCsv(text) {
+  const rows=[]; let row=[],cell="",inQ=false;
+  for(let i=0;i<text.length;i++){const c=text[i],n=text[i+1];
+    if(c==='"'&&inQ&&n==='"'){cell+='"';i++;}else if(c==='"'){inQ=!inQ;}
+    else if(c===","&&!inQ){row.push(cell);cell="";}
+    else if((c==="\n"||c==="\r")&&!inQ){if(c==="\r"&&n==="\n")i++;row.push(cell);rows.push(row);row=[];cell="";}
+    else{cell+=c;}}
+  row.push(cell);rows.push(row);return rows;
+}
+function csvEsc(v) { const s=String(v??""); return /[,"\n\r]/.test(s)?`"${s.replaceAll('"','""')}"`  :s; }
+function isValidDate(v) { return /^\d{4}-\d{2}-\d{2}$/.test(v)&&!isNaN(new Date(`${v}T00:00:00`)); }
+function today() { return new Date().toISOString().slice(0,10); }
+function showToast(msg) {
+  toast.textContent = msg; toast.classList.add("visible");
+  clearTimeout(showToast._t); showToast._t = setTimeout(()=>toast.classList.remove("visible"),2600);
 }
 
-function countBy(items, key) {
-  return items.reduce((counts, item) => {
-    counts[item[key]] = (counts[item[key]] || 0) + 1;
-    return counts;
-  }, {});
-}
-
-function compactCertificateStatus(label, status) {
-  return `<span class="compact-status">${label}: ${statusBadge(status)}</span>`;
-}
-
-function statusBadge(status) {
-  const className =
-    status === "Valid"
-      ? "good"
-      : status === "Expiring in 90 Days"
-        ? "watch"
-        : status === "Expiring in 30 Days"
-          ? "warn"
-          : status === "Missing"
-            ? "neutral"
-            : "bad";
-  return `<span class="badge ${className}">${escapeHtml(status)}</span>`;
-}
-
-function formatDateOnly(value) {
-  if (!value) return "Not recorded";
-  return new Intl.DateTimeFormat(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  }).format(new Date(`${value}T00:00:00`));
-}
-
-function formatDays(days) {
-  if (!Number.isFinite(days)) return "not recorded";
-  if (days < 0) return `${Math.abs(days)} days overdue`;
-  if (days === 0) return "expires today";
-  return `${days} days remaining`;
-}
-
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-function csvEscape(value) {
-  const str = String(value ?? "");
-  if (str.includes(",") || str.includes('"') || str.includes("\n") || str.includes("\r")) {
-    return `"${str.replaceAll('"', '""')}"`;
-  }
-  return str;
-}
-
-function showToast(message) {
-  toast.textContent = message;
-  toast.classList.add("visible");
-  window.clearTimeout(showToast.timeout);
-  showToast.timeout = window.setTimeout(() => toast.classList.remove("visible"), 2600);
-}
-
+// ── Boot ──────────────────────────────────────────────────────────────────────
 render();
+initGoogleSignIn();
