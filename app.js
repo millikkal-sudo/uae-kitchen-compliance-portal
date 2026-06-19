@@ -367,6 +367,16 @@ function deleteEmployee(id) {
   persist(); renderAll(); showToast("Employee removed.");
 }
 
+function clearCertificate(empId, type) {
+  const e = state.employees.find(x => x.id === empId);
+  if (!e) return;
+  if (!confirm(`Delete the ${CERTIFICATES[type].label} certificate for ${e.name}? This removes the uploaded file and dates.`)) return;
+  e.certificates[type] = {};
+  e.updatedAt = new Date().toISOString();
+  persist(); renderAll();
+  showToast(`${CERTIFICATES[type].label} certificate deleted for ${e.name}.`);
+}
+
 document.body.addEventListener("click", e => {
   const btn = e.target.closest("[data-action]");
   if (!btn) return;
@@ -374,6 +384,7 @@ document.body.addEventListener("click", e => {
   if (a === "edit-emp")  editEmployee(btn.dataset.id, btn.dataset.section);
   if (a === "del-emp")   deleteEmployee(btn.dataset.id);
   if (a === "edit-cert") showCertEdit(btn.dataset.eid, btn.dataset.type);
+  if (a === "del-cert")  clearCertificate(btn.dataset.eid, btn.dataset.type);
 });
 
 // ── Bulk certificate file matching (shared logic, parameterized by type) ─────
@@ -530,7 +541,11 @@ function renderSectionRows(type) {
       <td>${badge(sum.status)}</td>
       <td>${fmtDate(sum.issueDate)}</td>
       <td>${fmtDate(sum.expiryDate)}</td>
-      <td>${fileLink(sum.record.file)} <button class="text-btn" type="button" data-action="edit-cert" data-eid="${e.id}" data-type="${type}">Edit</button></td>
+      <td class="cert-file-cell">
+        ${fileLink(sum.record.file)}
+        <button class="text-btn" type="button" data-action="edit-cert" data-eid="${e.id}" data-type="${type}">Edit</button>
+        ${(sum.record.file || sum.record.issueDate) ? `<button class="icon-btn danger" type="button" title="Delete ${CERTIFICATES[type].label} certificate" aria-label="Delete ${CERTIFICATES[type].label} certificate" data-action="del-cert" data-eid="${e.id}" data-type="${type}">🗑</button>` : ""}
+      </td>
       <td class="row-actions">
         <button class="text-btn" type="button" data-action="edit-emp" data-id="${e.id}" data-section="${type}">Edit</button>
         <button class="text-btn danger" type="button" data-action="del-emp" data-id="${e.id}">Remove</button>
