@@ -43,39 +43,57 @@ function initGoogleSignIn() {
   google.accounts.id.prompt();
 }
 
+let _pendingPayload = null;
+let _tokenClient   = null;
+
 function handleGoogleCredential(response) {
   const payload = parseJwt(response.credential);
   if (!(payload.email || "").endsWith("@" + AUTHORIZED_DOMAIN)) {
     document.getElementById("loginError").classList.remove("hidden"); return;
   }
   document.getElementById("loginError").classList.add("hidden");
-  document.getElementById("loginLoading").classList.remove("hidden");
+  _pendingPayload = payload;
 
-  const tokenClient = google.accounts.oauth2.initTokenClient({
+  _tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: CLIENT_ID,
     scope: SCOPES,
     callback: async (tok) => {
       document.getElementById("loginLoading").classList.add("hidden");
+      document.getElementById("driveConsentBtn").classList.add("hidden");
       if (tok.error || !tok.access_token) {
-        showToast("Google Drive access denied — please allow Drive access when prompted.");
+        // Show the manual button so user can click it directly
+        document.getElementById("driveConsentBtn").classList.remove("hidden");
         return;
       }
-      session = { email: payload.email, name: payload.name || payload.email, accessToken: tok.access_token };
-      setSyncState("syncing");
-      // Timeout: if Drive takes >8s, proceed without it
-      const driveTimeout = new Promise(res => setTimeout(() => { setSyncState("error"); res(); }, 8000));
-      await Promise.race([loadFromDrive(), driveTimeout]);
-      render();
-      showToast(`Welcome, ${session.name.split(" ")[0]}!`);
+      await completeSignIn(payload, tok.access_token);
     },
     error_callback: (err) => {
-      document.getElementById("loginLoading").classList.add("hidden");
-      showToast("Drive permission denied. Try again and allow access.");
       console.error("Token error:", err);
+      document.getElementById("loginLoading").classList.add("hidden");
+      document.getElementById("driveConsentBtn").classList.remove("hidden");
     },
   });
-  // Always show consent prompt so Drive scope is explicitly granted
-  tokenClient.requestAccessToken({ prompt: "consent" });
+
+  // Try silent first
+  document.getElementById("loginLoading").classList.remove("hidden");
+  _tokenClient.requestAccessToken({ prompt: "" });
+}
+
+document.getElementById("driveConsentBtn").addEventListener("click", () => {
+  if (!_tokenClient) return;
+  document.getElementById("loginLoading").classList.remove("hidden");
+  document.getElementById("driveConsentBtn").classList.add("hidden");
+  // User gesture → popup won't be blocked
+  _tokenClient.requestAccessToken({ prompt: "consent" });
+});
+
+async function completeSignIn(payload, accessToken) {
+  session = { email: payload.email, name: payload.name || payload.email, accessToken };
+  setSyncState("syncing");
+  const driveTimeout = new Promise(res => setTimeout(() => { setSyncState("error"); res(); }, 10000));
+  await Promise.race([loadFromDrive(), driveTimeout]);
+  render();
+  showToast(`Welcome, ${session.name.split(" ")[0]}!`);
 }
 
 function parseJwt(token) {
@@ -165,6 +183,14 @@ function signOut() {
   render();
 }
 document.getElementById("signOutButton").addEventListener("click", signOut);
+
+// ── Bulk employee upload toggle ───────────────────────────────────────────────
+document.getElementById("showBulkUpload").addEventListener("click", () => {
+  const sec = document.getElementById("bulkEmpSection");
+  const btn = document.getElementById("showBulkUpload");
+  const isHidden = sec.classList.toggle("hidden");
+  btn.textContent = isHidden ? "⬆ Bulk Upload Employees" : "✕ Close";
+});
 
 // ── Tab navigation ────────────────────────────────────────────────────────────
 tabs.forEach(tab => tab.addEventListener("click", () => {
