@@ -569,10 +569,10 @@ function renderSectionRows(type) {
 
   setRows(`staffRows${sfx}`, emps.map(e => {
     const s = getCertSummary(e,type);
-    // + upload button visible to ALL (editors get full edit, viewers can still see)
-    const uploadBtn = isEditor
+    // + upload button: editors only, and only when no file is attached yet
+    const uploadBtn = isEditor && !s.record.file
       ? `<button class="upload-cert-btn" type="button" title="Upload ${CERTIFICATES[type].label} file" data-action="upload-cert" data-eid="${e.id}" data-type="${type}">＋</button>`
-      : (s.record.file ? "" : "");
+      : "";
     const editorActions = isEditor ? `
       <button class="text-btn" type="button" data-action="edit-emp" data-id="${e.id}" data-section="${type}">Edit</button>
       <button class="text-btn danger" type="button" data-action="del-emp" data-id="${e.id}">Remove</button>` : "";
