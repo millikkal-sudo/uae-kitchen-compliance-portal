@@ -26,6 +26,10 @@
         </div>
         <div class="google-signin-wrap">
           <div id="googleSignInButton"></div>
+          <button id="driveConsentBtn" class="drive-consent-btn hidden" type="button">
+            <svg width="18" height="18" viewBox="0 0 87.3 78" xmlns="http://www.w3.org/2000/svg"><path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/><path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44a9.06 9.06 0 0 0 -1.2 4.5h27.5z" fill="#00ac47"/><path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z" fill="#ea4335"/><path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/><path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/><path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/></svg>
+            Allow Google Drive Access
+          </button>
           <p id="loginError" class="login-error hidden">Only authorised @calo.app accounts can sign in.</p>
           <p id="loginLoading" class="login-loading hidden">Connecting to Google Drive…</p>
         </div>
@@ -118,12 +122,17 @@
             <div><h2>Staff &amp; Certificates</h2><p>Add staff, bulk-upload certificate files, and manage all records in one place.</p></div>
           </div>
 
-          <!-- Add / Edit employee -->
+          <!-- Add / Edit employee + Bulk upload in one panel -->
           <section class="panel">
-            <div class="panel-heading">
+            <div class="panel-heading add-emp-heading">
               <h3 id="employeeFormTitle">Add Employee</h3>
-              <button id="cancelEmployeeEdit" class="secondary-btn hidden" type="button">Cancel Edit</button>
+              <div class="panel-heading-actions">
+                <button id="showBulkUpload" class="secondary-btn" type="button">⬆ Bulk Upload Employees</button>
+                <button id="cancelEmployeeEdit" class="secondary-btn hidden" type="button">Cancel Edit</button>
+              </div>
             </div>
+
+            <!-- Single employee form -->
             <form id="employeeForm" class="employee-quick-form">
               <input name="editingId" type="hidden" />
               <label>Name <input name="name" required placeholder="Aisha Rahman" /></label>
@@ -137,6 +146,31 @@
               </label>
               <button id="employeeSubmitButton" class="primary-btn" type="submit">Add Employee</button>
             </form>
+
+            <!-- Bulk upload (toggled) -->
+            <div id="bulkEmpSection" class="bulk-emp-section hidden">
+              <div class="bulk-emp-steps">
+                <div class="bulk-emp-step">
+                  <span class="step-num">1</span>
+                  <div>
+                    <strong>Download the CSV template</strong>
+                    <p>Fill it in with your employees. Columns: Employee ID, Name, Department, BFS Issue Date, OHC Issue Date.</p>
+                    <button id="downloadEmployeeTemplate" class="secondary-btn" type="button">Download Template</button>
+                  </div>
+                </div>
+                <div class="bulk-emp-step">
+                  <span class="step-num">2</span>
+                  <div>
+                    <strong>Upload the filled CSV</strong>
+                    <p>Existing employees (matched by ID) will be updated. New ones will be added.</p>
+                    <form id="bulkUploadForm" class="inline-upload">
+                      <input name="csvFile" type="file" accept=".csv,text/csv" required />
+                      <button class="primary-btn" type="submit">Upload & Import</button>
+                    </form>
+                  </div>
+                </div>
+              </div>
+            </div>
           </section>
 
           <!-- Bulk certificate upload — unified -->
@@ -250,19 +284,7 @@
                   <p>Full staff list with BFS &amp; OHC statuses, dates, and file names.</p>
                   <button id="exportExcel" class="primary-btn" type="button">Download Excel</button>
                 </div>
-                <div>
-                  <strong>Employee CSV Template</strong>
-                  <p>Download the import template to bulk-add employees.</p>
-                  <button id="downloadEmployeeTemplate" class="secondary-btn" type="button">Download Template</button>
-                </div>
-                <div>
-                  <strong>Bulk Import Employees</strong>
-                  <p>Upload a filled CSV to add or update multiple employees at once.</p>
-                  <form id="bulkUploadForm" class="inline-upload">
-                    <input name="csvFile" type="file" accept=".csv,text/csv" required />
-                    <button class="primary-btn" type="submit">Upload CSV</button>
-                  </form>
-                </div>
+
               </div>
             </section>
           </div>
