@@ -1,474 +1,415 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>UAE Kitchen – Compliance Portal</title>
-    <link rel="stylesheet" href="styles.css" />
-    <script src="https://accounts.google.com/gsi/client" async defer></script>
-  </head>
-  <body>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>CALO – UAE Kitchen Compliance</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-    <!-- ── LOGIN ─────────────────────────────────────────────────────── -->
-    <section id="loginView" class="login-view">
-      <div class="login-bg"></div>
-      <div class="login-shadow"></div>
-      <div class="login-greenwash"></div>
-      <div class="login-panel">
-        <div class="login-brand">
-          <img src="assets/calo-logo.svg" alt="CALO" />
-          <span>UAE Kitchen Compliance</span>
-          <i></i>
-        </div>
-        <div class="login-copy">
-          <h1>Welcome back</h1>
-          <p>Sign in with your CALO Google account to manage BFS and OHC certificates.</p>
-        </div>
-        <div class="google-signin-wrap">
-          <div id="googleSignInButton"></div>
-          <button id="driveConsentBtn" class="drive-consent-btn hidden" type="button">
-            <svg width="18" height="18" viewBox="0 0 87.3 78" xmlns="http://www.w3.org/2000/svg"><path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/><path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44a9.06 9.06 0 0 0 -1.2 4.5h27.5z" fill="#00ac47"/><path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z" fill="#ea4335"/><path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/><path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/><path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/></svg>
-            Allow Google Drive Access
-          </button>
-          <p id="loginError" class="login-error hidden">Only authorised @calo.app accounts can sign in.</p>
-          <p id="loginLoading" class="login-loading hidden">Connecting to Google Drive…</p>
-        </div>
-        <div class="login-footer">
-          <p>© 2026 CALO Food Company · UAE Kitchen Compliance Portal</p>
-        </div>
-      </div>
-      <div class="login-locations">
-        <span>Dubai</span><span>UAE</span><span>UAE Kitchen</span><span>CALO</span>
-      </div>
-    </section>
+    body {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #0b1a20;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      padding: 24px;
+    }
 
-    <!-- ── APP SHELL ──────────────────────────────────────────────────── -->
-    <div id="appShell" class="app-shell hidden">
-      <aside class="sidebar">
-        <div class="brand-row app-brand">
-          <img src="assets/calo-logo.svg" alt="CALO" />
-          <div><strong>UAE Kitchen</strong><span>Compliance Portal</span></div>
-        </div>
+    .card {
+      background: #0f2630;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 20px;
+      padding: 48px 44px 40px;
+      width: 100%;
+      max-width: 420px;
+      box-shadow: 0 24px 60px rgba(0,0,0,0.5);
+    }
 
-        <nav class="nav-tabs" aria-label="Main sections">
-          <button class="nav-tab active" data-view="dashboard"  type="button">📊 Dashboard</button>
-          <button class="nav-tab"        data-view="bfs"        type="button">🧪 BFS Certificates</button>
-          <button class="nav-tab"        data-view="ohc"        type="button">🩺 OHC Certificates</button>
-          <button class="nav-tab"        data-view="alerts"     type="button">🔔 Alerts & Export</button>
-        </nav>
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 36px;
+    }
 
-        <div class="sidebar-panel">
-          <span class="eyebrow">Signed in</span>
-          <strong id="signedInEmail">—</strong>
-          <div id="syncStatus" class="sync-status sync-idle">
-            <span class="sync-dot"></span>
-            <span id="syncLabel">Synced to Drive</span>
-          </div>
-          <!-- viewer-only badge shown for read-only users -->
-          <div id="viewerBadge" class="viewer-badge hidden">👁 View only</div>
-          <button id="signOutButton" class="ghost-btn" type="button">Sign out</button>
-        </div>
-      </aside>
+    .brand-logo {
+      font-size: 22px;
+      font-weight: 900;
+      letter-spacing: 0.08em;
+      color: #fff;
+      text-transform: uppercase;
+    }
 
-      <main class="main">
-        <header class="topbar">
-          <div>
-            <span class="eyebrow">UAE HR &amp; Ops</span>
-            <h1>UAE Kitchen – Compliance Portal</h1>
-          </div>
-          <div class="actions">
-            <button id="exportPdfTop" class="primary-btn" type="button">Export PDF</button>
-          </div>
-        </header>
+    .brand-tag {
+      font-size: 11px;
+      font-weight: 600;
+      color: #5fc4a0;
+      letter-spacing: 0.05em;
+      background: rgba(95,196,160,0.12);
+      border: 1px solid rgba(95,196,160,0.25);
+      padding: 3px 8px;
+      border-radius: 6px;
+      text-transform: uppercase;
+    }
 
-        <!-- ── DASHBOARD ───────────────────────────────────────────── -->
-        <section id="dashboard" class="view active-view">
-          <div class="section-heading">
-            <div>
-              <h2>Certificate Overview</h2>
-              <p>Live status — urgent renewals surfaced first.</p>
-            </div>
-            <div id="overallStatus" class="status-pill">Compliant</div>
-          </div>
+    h1 {
+      font-size: 28px;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 6px;
+    }
 
-          <div class="metric-grid metric-grid-top">
-            <article class="metric"><span>Employees</span><strong id="employeeMetric">0</strong></article>
-            <article class="metric urgent"><span>Action Needed (Expired or ≤30 Days)</span><strong id="urgentMetric">0</strong></article>
-          </div>
+    .subtitle {
+      font-size: 13.5px;
+      color: rgba(255,255,255,0.45);
+      margin-bottom: 36px;
+      line-height: 1.5;
+    }
 
-          <div class="cert-overview-grid">
-            <section class="panel cert-overview-panel">
-              <div class="panel-heading"><h3><span class="cert-type-badge bfs-badge">BFS</span> Basic Food Safety</h3></div>
-              <div class="cert-stat-grid">
-                <div class="cert-stat good"><span>Valid</span><strong id="bfsValidMetric">0</strong></div>
-                <div class="cert-stat watch"><span>Expiring 90d</span><strong id="bfsNinetyMetric">0</strong></div>
-                <div class="cert-stat warn"><span>Expiring 30d</span><strong id="bfsThirtyMetric">0</strong></div>
-                <div class="cert-stat bad"><span>Expired</span><strong id="bfsExpiredMetric">0</strong></div>
-                <div class="cert-stat neutral"><span>Missing</span><strong id="bfsMissingMetric">0</strong></div>
-              </div>
-            </section>
-            <section class="panel cert-overview-panel">
-              <div class="panel-heading"><h3><span class="cert-type-badge ohc-badge">OHC</span> Occupational Health Card</h3></div>
-              <div class="cert-stat-grid">
-                <div class="cert-stat good"><span>Valid</span><strong id="ohcValidMetric">0</strong></div>
-                <div class="cert-stat watch"><span>Expiring 90d</span><strong id="ohcNinetyMetric">0</strong></div>
-                <div class="cert-stat warn"><span>Expiring 30d</span><strong id="ohcThirtyMetric">0</strong></div>
-                <div class="cert-stat bad"><span>Expired</span><strong id="ohcExpiredMetric">0</strong></div>
-                <div class="cert-stat neutral"><span>Missing</span><strong id="ohcMissingMetric">0</strong></div>
-              </div>
-            </section>
-          </div>
+    .field {
+      margin-bottom: 16px;
+    }
 
-          <div class="content-grid">
-            <section class="panel">
-              <div class="panel-heading">
-                <h3>Needs Immediate Attention</h3>
-                <span id="attentionCount" class="record-count">0 items</span>
-              </div>
-              <div class="table-wrap">
-                <table>
-                  <thead><tr><th>Employee</th><th>Cert</th><th>Expiry</th><th>Status</th><th>Action</th></tr></thead>
-                  <tbody id="attentionRows"></tbody>
-                </table>
-              </div>
-            </section>
-            <section class="panel">
-              <div class="panel-heading"><h3>Department Risk</h3></div>
-              <div id="departmentRiskList" class="risk-list"></div>
-            </section>
-          </div>
-        </section>
+    label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: rgba(255,255,255,0.55);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-bottom: 7px;
+    }
 
-        <!-- ── BFS CERTIFICATES ────────────────────────────────────── -->
-        <section id="bfs" class="view">
-          <div class="section-heading">
-            <div><h2><span class="cert-type-badge bfs-badge">BFS</span> Basic Food Safety</h2><p>Add staff, bulk-upload BFS certificate files, and manage BFS records.</p></div>
-          </div>
+    input {
+      width: 100%;
+      padding: 13px 16px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 10px;
+      color: #fff;
+      font-size: 15px;
+      outline: none;
+      transition: border-color 0.2s, background 0.2s;
+    }
 
-          <!-- editor-only panels -->
-          <div class="editor-only">
-            <section class="panel">
-              <div class="panel-heading add-emp-heading">
-                <h3 id="employeeFormTitleBfs">Add Employee</h3>
-                <div class="panel-heading-actions">
-                  <button id="showBulkCertBfs" class="secondary-btn" type="button">📎 Bulk Upload BFS Files</button>
-                  <button id="showBulkUploadBfs" class="secondary-btn" type="button">⬆ Bulk Upload Employees</button>
-                  <button id="cancelEmployeeEditBfs" class="secondary-btn hidden" type="button">Cancel Edit</button>
-                </div>
-              </div>
+    input::placeholder { color: rgba(255,255,255,0.25); }
 
-              <form id="employeeFormBfs" class="employee-quick-form" data-cert-type="bfs">
-                <input name="editingId" type="hidden" />
-                <label>Name <input name="name" required placeholder="Aisha Rahman" /></label>
-                <label>Employee ID <input name="employeeId" required placeholder="CK-1024" /></label>
-                <label>Department
-                  <select name="department" required>
-                    <option value="">Select</option>
-                    <option value="Kitchen">Kitchen</option>
-                    <option value="Dispatch">Dispatch</option>
-                  </select>
-                </label>
-                <label>BFS Issue Date <input name="bfsIssueDate" type="date" /></label>
-                <button id="employeeSubmitButtonBfs" class="primary-btn" type="submit">Add Employee</button>
-              </form>
+    input:focus {
+      border-color: #5fc4a0;
+      background: rgba(95,196,160,0.06);
+    }
 
-              <!-- Bulk cert files (toggled) -->
-              <div id="bulkCertSectionBfs" class="bulk-emp-section hidden">
-                <div class="bulk-emp-steps">
-                  <div class="bulk-emp-step">
-                    <span class="step-num bfs-step">BFS</span>
-                    <div>
-                      <strong>Bulk Upload BFS Certificate Files</strong>
-                      <p>Name files by Employee ID (e.g. <strong>CK-1024.pdf</strong>). Pick all files at once, then confirm.</p>
-                      <label class="bulk-cert-file-label" style="margin-top:8px;">
-                        Select files (PDF / image)
-                        <input id="bulkCertInputBfs" type="file" accept=".pdf,image/*" multiple />
-                      </label>
-                      <div id="bulkCertPreviewBfs" class="bulk-preview hidden" style="margin-top:8px;"></div>
-                      <div id="bulkCertActionsBfs" class="bulk-cert-actions hidden" style="margin-top:8px;">
-                        <button id="bulkCertConfirmBfs" class="primary-btn" type="button">Attach Files</button>
-                        <button id="bulkCertClearBfs" class="secondary-btn" type="button">Clear</button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
+    .password-wrap {
+      position: relative;
+    }
 
-              <!-- Bulk employee CSV (toggled) -->
-              <div id="bulkEmpSectionBfs" class="bulk-emp-section hidden">
-                <div class="bulk-emp-steps">
-                  <div class="bulk-emp-step">
-                    <span class="step-num">1</span>
-                    <div>
-                      <strong>Download the CSV template</strong>
-                      <p>Fill it in: Employee ID, Name, Department, BFS Issue Date.</p>
-                      <button id="downloadEmployeeTemplateBfs" class="secondary-btn" type="button" data-cert-type="bfs">Download Template</button>
-                    </div>
-                  </div>
-                  <div class="bulk-emp-step">
-                    <span class="step-num">2</span>
-                    <div>
-                      <strong>Upload the filled CSV</strong>
-                      <p>Existing employees (matched by ID) will be updated. New ones will be added.</p>
-                      <form id="bulkUploadFormBfs" class="inline-upload">
-                        <input name="csvFile" type="file" accept=".csv,text/csv" required />
-                        <button class="primary-btn" type="submit">Upload &amp; Import</button>
-                      </form>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </section>
-          </div>
+    .toggle-pw {
+      position: absolute;
+      right: 14px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      border: none;
+      color: rgba(255,255,255,0.35);
+      cursor: pointer;
+      font-size: 13px;
+      padding: 4px;
+      transition: color 0.15s;
+    }
+    .toggle-pw:hover { color: rgba(255,255,255,0.7); }
 
-          <section class="panel">
-            <div class="panel-heading table-tools">
-              <h3>BFS Register</h3>
-              <input id="employeeSearchBfs" type="search" placeholder="Search name or ID…" />
-              <select id="employeeDepartmentFilterBfs">
-                <option value="all">All departments</option>
-              </select>
-              <select id="employeeStatusFilterBfs">
-                <option value="all">All statuses</option>
-                <option value="Valid">Valid</option>
-                <option value="Expiring">Expiring</option>
-                <option value="Expired">Expired</option>
-                <option value="Missing">Missing</option>
-              </select>
-            </div>
-            <div class="table-wrap">
-              <table class="staff-table">
-                <thead>
-                  <tr>
-                    <th>Name</th><th>ID</th><th>Dept</th>
-                    <th>BFS Status</th><th>BFS Issue</th><th>BFS Expiry</th><th>BFS Certificate</th>
-                    <th class="editor-only-col">Actions</th>
-                  </tr>
-                </thead>
-                <tbody id="staffRowsBfs"></tbody>
-              </table>
-            </div>
-          </section>
+    .btn-primary {
+      width: 100%;
+      padding: 14px;
+      margin-top: 8px;
+      background: #5fc4a0;
+      color: #0b1a20;
+      border: none;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 700;
+      cursor: pointer;
+      letter-spacing: 0.02em;
+      transition: background 0.2s, opacity 0.2s, transform 0.1s;
+    }
 
-          <section id="certEditPanelBfs" class="panel hidden editor-only">
-            <div class="panel-heading">
-              <h3 id="certEditTitleBfs">Edit Certificate</h3>
-              <button id="cancelCertEditBfs" class="secondary-btn" type="button">Cancel</button>
-            </div>
-            <form id="certificateFormBfs" class="employee-quick-form">
-              <input name="employeeId" type="hidden" />
-              <input name="type" type="hidden" value="bfs" />
-              <label>Issue date  <input name="issueDate"  type="date" required /></label>
-              <label>Expiry date <input name="expiryDate" type="date" required /></label>
-              <label>Certificate file <input name="file" type="file" accept=".pdf,image/*" /></label>
-              <button class="primary-btn" type="submit">Save Certificate</button>
-            </form>
-          </section>
-        </section>
+    .btn-primary:hover:not(:disabled) { background: #4db38f; }
+    .btn-primary:active:not(:disabled) { transform: scale(0.98); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
 
-        <!-- ── OHC CERTIFICATES ────────────────────────────────────── -->
-        <section id="ohc" class="view">
-          <div class="section-heading">
-            <div><h2><span class="cert-type-badge ohc-badge">OHC</span> Occupational Health Card</h2><p>Add staff, bulk-upload OHC certificate files, and manage OHC records.</p></div>
-          </div>
+    .alert {
+      margin-top: 18px;
+      padding: 12px 14px;
+      border-radius: 9px;
+      font-size: 13.5px;
+      line-height: 1.45;
+      display: none;
+    }
 
-          <!-- editor-only panels -->
-          <div class="editor-only">
-            <section class="panel">
-              <div class="panel-heading add-emp-heading">
-                <h3 id="employeeFormTitleOhc">Add Employee</h3>
-                <div class="panel-heading-actions">
-                  <button id="showBulkCertOhc" class="secondary-btn" type="button">📎 Bulk Upload OHC Files</button>
-                  <button id="showBulkUploadOhc" class="secondary-btn" type="button">⬆ Bulk Upload Employees</button>
-                  <button id="cancelEmployeeEditOhc" class="secondary-btn hidden" type="button">Cancel Edit</button>
-                </div>
-              </div>
+    .alert.error {
+      background: rgba(255, 90, 90, 0.12);
+      border: 1px solid rgba(255,90,90,0.3);
+      color: #ff8080;
+    }
 
-              <form id="employeeFormOhc" class="employee-quick-form" data-cert-type="ohc">
-                <input name="editingId" type="hidden" />
-                <label>Name <input name="name" required placeholder="Aisha Rahman" /></label>
-                <label>Employee ID <input name="employeeId" required placeholder="CK-1024" /></label>
-                <label>Department
-                  <select name="department" required>
-                    <option value="">Select</option>
-                    <option value="Kitchen">Kitchen</option>
-                    <option value="Dispatch">Dispatch</option>
-                  </select>
-                </label>
-                <label>OHC Issue Date <input name="ohcIssueDate" type="date" /></label>
-                <button id="employeeSubmitButtonOhc" class="primary-btn" type="submit">Add Employee</button>
-              </form>
+    .alert.success {
+      background: rgba(95,196,160,0.1);
+      border: 1px solid rgba(95,196,160,0.3);
+      color: #5fc4a0;
+    }
 
-              <!-- Bulk cert files (toggled) -->
-              <div id="bulkCertSectionOhc" class="bulk-emp-section hidden">
-                <div class="bulk-emp-steps">
-                  <div class="bulk-emp-step">
-                    <span class="step-num ohc-step">OHC</span>
-                    <div>
-                      <strong>Bulk Upload OHC Certificate Files</strong>
-                      <p>Name files by Employee ID (e.g. <strong>CK-1024.pdf</strong>). Pick all files at once, then confirm.</p>
-                      <label class="bulk-cert-file-label" style="margin-top:8px;">
-                        Select files (PDF / image)
-                        <input id="bulkCertInputOhc" type="file" accept=".pdf,image/*" multiple />
-                      </label>
-                      <div id="bulkCertPreviewOhc" class="bulk-preview hidden" style="margin-top:8px;"></div>
-                      <div id="bulkCertActionsOhc" class="bulk-cert-actions hidden" style="margin-top:8px;">
-                        <button id="bulkCertConfirmOhc" class="primary-btn" type="button">Attach Files</button>
-                        <button id="bulkCertClearOhc" class="secondary-btn" type="button">Clear</button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
+    .alert.show { display: block; }
 
-              <!-- Bulk employee CSV (toggled) -->
-              <div id="bulkEmpSectionOhc" class="bulk-emp-section hidden">
-                <div class="bulk-emp-steps">
-                  <div class="bulk-emp-step">
-                    <span class="step-num">1</span>
-                    <div>
-                      <strong>Download the CSV template</strong>
-                      <p>Fill it in: Employee ID, Name, Department, OHC Issue Date.</p>
-                      <button id="downloadEmployeeTemplateOhc" class="secondary-btn" type="button" data-cert-type="ohc">Download Template</button>
-                    </div>
-                  </div>
-                  <div class="bulk-emp-step">
-                    <span class="step-num">2</span>
-                    <div>
-                      <strong>Upload the filled CSV</strong>
-                      <p>Existing employees (matched by ID) will be updated. New ones will be added.</p>
-                      <form id="bulkUploadFormOhc" class="inline-upload">
-                        <input name="csvFile" type="file" accept=".csv,text/csv" required />
-                        <button class="primary-btn" type="submit">Upload &amp; Import</button>
-                      </form>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </section>
-          </div>
+    /* ── Logged-in dashboard panel ── */
+    .dashboard { display: none; }
 
-          <section class="panel">
-            <div class="panel-heading table-tools">
-              <h3>OHC Register</h3>
-              <input id="employeeSearchOhc" type="search" placeholder="Search name or ID…" />
-              <select id="employeeDepartmentFilterOhc">
-                <option value="all">All departments</option>
-              </select>
-              <select id="employeeStatusFilterOhc">
-                <option value="all">All statuses</option>
-                <option value="Valid">Valid</option>
-                <option value="Expiring">Expiring</option>
-                <option value="Expired">Expired</option>
-                <option value="Missing">Missing</option>
-              </select>
-            </div>
-            <div class="table-wrap">
-              <table class="staff-table">
-                <thead>
-                  <tr>
-                    <th>Name</th><th>ID</th><th>Dept</th>
-                    <th>OHC Status</th><th>OHC Issue</th><th>OHC Expiry</th><th>OHC Certificate</th>
-                    <th class="editor-only-col">Actions</th>
-                  </tr>
-                </thead>
-                <tbody id="staffRowsOhc"></tbody>
-              </table>
-            </div>
-          </section>
+    .dashboard.show { display: block; }
 
-          <section id="certEditPanelOhc" class="panel hidden editor-only">
-            <div class="panel-heading">
-              <h3 id="certEditTitleOhc">Edit Certificate</h3>
-              <button id="cancelCertEditOhc" class="secondary-btn" type="button">Cancel</button>
-            </div>
-            <form id="certificateFormOhc" class="employee-quick-form">
-              <input name="employeeId" type="hidden" />
-              <input name="type" type="hidden" value="ohc" />
-              <label>Issue date  <input name="issueDate"  type="date" required /></label>
-              <label>Expiry date <input name="expiryDate" type="date" required /></label>
-              <label>Certificate file <input name="file" type="file" accept=".pdf,image/*" /></label>
-              <button class="primary-btn" type="submit">Save Certificate</button>
-            </form>
-          </section>
-        </section>
+    .welcome-header {
+      font-size: 20px;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 4px;
+    }
 
-        <!-- ── ALERTS & EXPORT ─────────────────────────────────────── -->
-        <section id="alerts" class="view">
-          <div class="section-heading">
-            <div><h2>Alerts &amp; Export</h2><p>Send certificate renewal reminders by email and download the compliance report.</p></div>
-          </div>
+    .welcome-email {
+      font-size: 13px;
+      color: rgba(255,255,255,0.45);
+      margin-bottom: 28px;
+    }
 
-          <div class="alerts-export-grid">
-            <section class="panel">
-              <div class="panel-heading"><h3>Email Alert Settings</h3></div>
-              <form id="alertSettingsForm" class="settings-grid">
-                <label>Manager email
-                  <input name="managerEmail" type="email" placeholder="manager@calo.app" />
-                </label>
-                <label>Reminder period
-                  <select name="reminderDays">
-                    <option value="90">90 days before expiry</option>
-                    <option value="60">60 days before expiry</option>
-                    <option value="30" selected>30 days before expiry</option>
-                    <option value="14">14 days before expiry</option>
-                    <option value="7">7 days before expiry</option>
-                  </select>
-                </label>
-                <button class="primary-btn" type="submit">Save &amp; Send Mail Alert</button>
-              </form>
-            </section>
+    .tile-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
 
-            <section class="panel">
-              <div class="panel-heading"><h3>Export</h3></div>
-              <div class="export-actions">
-                <div>
-                  <strong>PDF Report</strong>
-                  <p>Full compliance report with BFS &amp; OHC summaries, statuses, and dates.</p>
-                  <button id="exportPdf" class="primary-btn" type="button">Download PDF</button>
-                </div>
-              </div>
-            </section>
-          </div>
+    .tile {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 12px;
+      padding: 18px 16px;
+      text-align: center;
+    }
 
-          <section class="panel">
-            <div class="panel-heading">
-              <h3>Alert Queue</h3>
-              <button id="prepareAllAlerts" class="secondary-btn" type="button">Send All to Manager</button>
-            </div>
-            <div id="alertQueue"></div>
-          </section>
-        </section>
+    .tile-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: rgba(255,255,255,0.4);
+      margin-bottom: 8px;
+      font-weight: 600;
+    }
 
-      </main>
+    .tile-value {
+      font-size: 22px;
+      font-weight: 800;
+      color: #5fc4a0;
+    }
+
+    .btn-logout {
+      width: 100%;
+      padding: 12px;
+      background: transparent;
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 10px;
+      color: rgba(255,255,255,0.5);
+      font-size: 14px;
+      cursor: pointer;
+      transition: border-color 0.2s, color 0.2s;
+    }
+
+    .btn-logout:hover {
+      border-color: rgba(255,255,255,0.3);
+      color: rgba(255,255,255,0.8);
+    }
+
+    .footer {
+      margin-top: 32px;
+      font-size: 11.5px;
+      color: rgba(255,255,255,0.2);
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+<div class="card">
+
+  <!-- ── LOGIN PANEL ── -->
+  <div id="loginPanel">
+    <div class="brand">
+      <span class="brand-logo">CALO</span>
+      <span class="brand-tag">UAE Kitchen Compliance</span>
     </div>
 
-    <!-- cert upload modal -->
-    <div id="certUploadModal" class="modal-overlay hidden">
-      <div class="modal-box">
-        <div class="modal-header">
-          <h3 id="certUploadModalTitle">Upload Certificate</h3>
-          <button id="certUploadModalClose" class="ghost-btn" type="button">✕</button>
-        </div>
-        <form id="certUploadModalForm" class="modal-form">
-          <input name="employeeId" type="hidden" />
-          <input name="type" type="hidden" />
-          <label>Issue date <input name="issueDate" type="date" /></label>
-          <label>Expiry date <input name="expiryDate" type="date" /></label>
-          <label>Certificate file (PDF / image)
-            <input name="file" type="file" accept=".pdf,image/*" required />
-          </label>
-          <div class="modal-actions">
-            <button class="primary-btn" type="submit">Save Certificate</button>
-            <button id="certUploadModalCancel" class="secondary-btn" type="button">Cancel</button>
-          </div>
-        </form>
+    <h1>Welcome back</h1>
+    <p class="subtitle">Sign in with your staff credentials to manage BFS and OHC certificates.</p>
+
+    <div class="field">
+      <label for="email">Email</label>
+      <input type="email" id="email" placeholder="yourname@calo.app" autocomplete="username" />
+    </div>
+
+    <div class="field">
+      <label for="password">Password</label>
+      <div class="password-wrap">
+        <input type="password" id="password" placeholder="••••••••" autocomplete="current-password" />
+        <button class="toggle-pw" id="togglePw" type="button" aria-label="Show password">Show</button>
       </div>
     </div>
 
-    <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
-    <script src="app.js"></script>
-  </body>
+    <button class="btn-primary" id="loginBtn">Sign in</button>
+
+    <div class="alert error" id="errorBox"></div>
+    <div class="alert success" id="successBox"></div>
+
+    <div class="footer">© 2026 CALO Food Company · UAE Kitchen Compliance Portal</div>
+  </div>
+
+  <!-- ── DASHBOARD PANEL (shown after login) ── -->
+  <div id="dashPanel" class="dashboard">
+    <div class="brand">
+      <span class="brand-logo">CALO</span>
+      <span class="brand-tag">UAE Kitchen Compliance</span>
+    </div>
+
+    <p class="welcome-header">Portal</p>
+    <p class="welcome-email" id="loggedEmail"></p>
+
+    <div class="tile-grid">
+      <div class="tile">
+        <div class="tile-label">BFS Certificates</div>
+        <div class="tile-value" id="bfsCount">—</div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">OHC Certificates</div>
+        <div class="tile-value" id="ohcCount">—</div>
+      </div>
+    </div>
+
+    <button class="btn-logout" id="logoutBtn">Sign out</button>
+
+    <div class="footer">© 2026 CALO Food Company · UAE Kitchen Compliance Portal</div>
+  </div>
+
+</div>
+
+<script>
+  const SUPABASE_URL  = 'https://iflquskysqchhbywvmow.supabase.co';
+  const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlmbHF1c2t5c3FjaGhieXd2bW93Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE4NjM3ODIsImV4cCI6MjA5NzQzOTc4Mn0.FFcd80AqZ8hpyi-Bs_rPnCNZNp075YqBYM1yAYeyGUw';
+
+  const { createClient } = supabase;
+  const sb = createClient(SUPABASE_URL, SUPABASE_ANON);
+
+  /* DOM refs */
+  const loginPanel = document.getElementById('loginPanel');
+  const dashPanel  = document.getElementById('dashPanel');
+  const emailEl    = document.getElementById('email');
+  const passwordEl = document.getElementById('password');
+  const loginBtn   = document.getElementById('loginBtn');
+  const togglePw   = document.getElementById('togglePw');
+  const errorBox   = document.getElementById('errorBox');
+  const successBox = document.getElementById('successBox');
+  const loggedEmail = document.getElementById('loggedEmail');
+  const logoutBtn  = document.getElementById('logoutBtn');
+
+  /* Toggle password visibility */
+  togglePw.addEventListener('click', () => {
+    const isText = passwordEl.type === 'text';
+    passwordEl.type = isText ? 'password' : 'text';
+    togglePw.textContent = isText ? 'Show' : 'Hide';
+  });
+
+  function showError(msg) {
+    errorBox.textContent = msg;
+    errorBox.classList.add('show');
+    successBox.classList.remove('show');
+  }
+
+  function showSuccess(msg) {
+    successBox.textContent = msg;
+    successBox.classList.add('show');
+    errorBox.classList.remove('show');
+  }
+
+  function clearAlerts() {
+    errorBox.classList.remove('show');
+    successBox.classList.remove('show');
+  }
+
+  function showDashboard(user) {
+    loginPanel.style.display = 'none';
+    dashPanel.classList.add('show');
+    loggedEmail.textContent = user.email;
+    loadCounts(user);
+  }
+
+  function showLogin() {
+    loginPanel.style.display = 'block';
+    dashPanel.classList.remove('show');
+    clearAlerts();
+  }
+
+  async function loadCounts(user) {
+    /* Try fetching counts — gracefully handles missing tables */
+    try {
+      const [bfsRes, ohcRes] = await Promise.all([
+        sb.from('bfs_certificates').select('id', { count: 'exact', head: true }),
+        sb.from('ohc_certificates').select('id', { count: 'exact', head: true }),
+      ]);
+      document.getElementById('bfsCount').textContent = bfsRes.count ?? '—';
+      document.getElementById('ohcCount').textContent = ohcRes.count ?? '—';
+    } catch (_) {
+      /* Tables may not exist yet — silently ignore */
+    }
+  }
+
+  /* ── Sign in ── */
+  loginBtn.addEventListener('click', async () => {
+    clearAlerts();
+    const email    = emailEl.value.trim();
+    const password = passwordEl.value;
+
+    if (!email || !password) { showError('Please enter your email and password.'); return; }
+
+    loginBtn.disabled = true;
+    loginBtn.textContent = 'Signing in…';
+
+    const { data, error } = await sb.auth.signInWithPassword({ email, password });
+
+    loginBtn.disabled = false;
+    loginBtn.textContent = 'Sign in';
+
+    if (error) {
+      showError(error.message === 'Invalid login credentials'
+        ? 'Incorrect email or password. Please try again.'
+        : error.message);
+      return;
+    }
+
+    showDashboard(data.user);
+  });
+
+  /* Allow Enter key to submit */
+  [emailEl, passwordEl].forEach(el =>
+    el.addEventListener('keydown', e => { if (e.key === 'Enter') loginBtn.click(); })
+  );
+
+  /* ── Sign out ── */
+  logoutBtn.addEventListener('click', async () => {
+    await sb.auth.signOut();
+    showLogin();
+  });
+
+  /* ── Restore existing session on page load ── */
+  sb.auth.getSession().then(({ data: { session } }) => {
+    if (session?.user) showDashboard(session.user);
+  });
+</script>
+</body>
 </html>
