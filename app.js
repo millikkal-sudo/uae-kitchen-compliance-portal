@@ -348,15 +348,23 @@ function matchFile(fileName) {
   const base = fileName.replace(/\.[^.]+$/, "").trim().toLowerCase();
   const normalize = s => s.toLowerCase().replace(/[^a-z0-9]/g, "");
   const baseNorm = normalize(base);
+  const firstName = e => e.name.trim().split(/\s+/)[0].toLowerCase();
+  const lastName  = e => e.name.trim().split(/\s+/).slice(-1)[0].toLowerCase();
   // 1. Exact employee ID match
   let emp = state.employees.find(e => e.employeeId.trim().toLowerCase() === base);
   // 2. Exact full name match (case-insensitive)
   if (!emp) emp = state.employees.find(e => e.name.trim().toLowerCase() === base);
-  // 3. Normalized name match (ignores spaces, hyphens, punctuation)
+  // 3. Normalized full name match (ignores spaces, hyphens, punctuation)
   if (!emp) emp = state.employees.find(e => normalize(e.name) === baseNorm);
-  // 4. File name contains employee ID (e.g. "CK-1024_bfs.pdf")
+  // 4. First name only match (e.g. "Umesh.pdf")
+  if (!emp) emp = state.employees.find(e => firstName(e) === base);
+  // 5. Last name only match (e.g. "Rahman.pdf")
+  if (!emp) emp = state.employees.find(e => lastName(e) === base);
+  // 6. File name contains employee ID (e.g. "CK-1024_bfs.pdf")
   if (!emp) emp = state.employees.find(e => base.includes(e.employeeId.trim().toLowerCase()));
-  // 5. File name contains normalized name
+  // 7. File name contains first name (e.g. "umesh_cert.pdf")
+  if (!emp) emp = state.employees.find(e => baseNorm.includes(normalize(firstName(e))) && normalize(firstName(e)).length > 2);
+  // 8. File name contains normalized full name
   if (!emp) emp = state.employees.find(e => baseNorm.includes(normalize(e.name)));
   return emp ? { employee: emp } : null;
 }
