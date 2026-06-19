@@ -206,11 +206,13 @@ employeeForm.addEventListener("submit", e => {
   const dupId = state.employees.find(x => x.employeeId.toLowerCase() === d.employeeId.trim().toLowerCase() && x.id !== d.editingId);
   if (dupId) { showToast("Employee ID already in use."); return; }
   const certs = existing?.certificates || createEmptyCertificates();
-  if (d.bfsIssueDate && isValidDate(d.bfsIssueDate)) {
-    certs.bfs = { ...(certs.bfs||{}), issueDate: d.bfsIssueDate, expiryDate: calcExpiry(d.bfsIssueDate, CERTIFICATES.bfs.validYears), updatedAt: new Date().toISOString() };
+  const bfsDate = parseDate(d.bfsIssueDate);
+  const ohcDate = parseDate(d.ohcIssueDate);
+  if (bfsDate) {
+    certs.bfs = { ...(certs.bfs||{}), issueDate: bfsDate, expiryDate: calcExpiry(bfsDate, CERTIFICATES.bfs.validYears), updatedAt: new Date().toISOString() };
   }
-  if (d.ohcIssueDate && isValidDate(d.ohcIssueDate)) {
-    certs.ohc = { ...(certs.ohc||{}), issueDate: d.ohcIssueDate, expiryDate: calcExpiry(d.ohcIssueDate, CERTIFICATES.ohc.validYears), updatedAt: new Date().toISOString() };
+  if (ohcDate) {
+    certs.ohc = { ...(certs.ohc||{}), issueDate: ohcDate, expiryDate: calcExpiry(ohcDate, CERTIFICATES.ohc.validYears), updatedAt: new Date().toISOString() };
   }
   const emp = {
     id: existing?.id || crypto.randomUUID(),
@@ -611,8 +613,10 @@ function importFromCsv(text) {
     if (!rec.employeeid || !rec.name || !rec.department) { skipped++; return; }
     const existing = state.employees.find(e => e.employeeId.toLowerCase() === rec.employeeid.toLowerCase());
     const certs = existing?.certificates || createEmptyCertificates();
-    if (rec.bfsissuedate && isValidDate(rec.bfsissuedate)) certs.bfs = { issueDate: rec.bfsissuedate, expiryDate: calcExpiry(rec.bfsissuedate, 2), file: certs.bfs?.file||null, updatedAt: new Date().toISOString() };
-    if (rec.ohcissuedate && isValidDate(rec.ohcissuedate)) certs.ohc = { issueDate: rec.ohcissuedate, expiryDate: calcExpiry(rec.ohcissuedate, 1), file: certs.ohc?.file||null, updatedAt: new Date().toISOString() };
+    const bfsDate = parseDate(rec.bfsissuedate);
+    const ohcDate = parseDate(rec.ohcissuedate);
+    if (bfsDate) certs.bfs = { issueDate: bfsDate, expiryDate: calcExpiry(bfsDate, 2), file: certs.bfs?.file||null, updatedAt: new Date().toISOString() };
+    if (ohcDate) certs.ohc = { issueDate: ohcDate, expiryDate: calcExpiry(ohcDate, 1), file: certs.ohc?.file||null, updatedAt: new Date().toISOString() };
     const emp = { id: existing?.id||crypto.randomUUID(), name: rec.name, employeeId: rec.employeeid, department: rec.department, certificates: certs, createdAt: existing?.createdAt||new Date().toISOString(), updatedAt: new Date().toISOString() };
     if (existing) { state.employees = state.employees.map(x => x.id===existing.id?emp:x); updated++; }
     else { state.employees.unshift(emp); added++; }
@@ -712,6 +716,65 @@ function parseCsv(text) {
 }
 function csvEsc(v) { const s=String(v??""); return /[,"\n\r]/.test(s)?`"${s.replaceAll('"','""')}"`  :s; }
 function isValidDate(v) { return /^\d{4}-\d{2}-\d{2}$/.test(v)&&!isNaN(new Date(`${v}T00:00:00`)); }
+
+// Accepts: YYYY-MM-DD, DD/MM/YYYY, MM/DD/YYYY, DD-MM-YYYY, D/M/YYYY, Excel serial numbers
+// Returns "YYYY-MM-DD" or null
+function parseDate(v) {
+  if (!v || !String(v).trim()) return null;
+  const s = String(v).trim();
+
+  // Already ISO
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const d = new Date(`${s}T00:00:00`);
+    return isNaN(d) ? null : s;
+  }
+
+  // Excel serial number (e.g. 46772)
+  if (/^\d{4,5}$/.test(s)) {
+    const serial = parseInt(s, 10);
+    if (serial > 1000 && serial < 100000) {
+      // Excel epoch is Jan 0 1900; JS Date from serial
+      const d = new Date(Date.UTC(1899, 11, 30) + serial * 86400000);
+      if (!isNaN(d)) return d.toISOString().slice(0, 10);
+    }
+    return null;
+  }
+
+  // DD/MM/YYYY or D/M/YYYY or DD-MM-YYYY
+  const dmy = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})$/);
+  if (dmy) {
+    const [, dd, mm, yyyy] = dmy;
+    // Try DD/MM/YYYY first (UAE/UK convention)
+    const d1 = new Date(`${yyyy}-${mm.padStart(2,'0')}-${dd.padStart(2,'0')}T00:00:00`);
+    if (!isNaN(d1) && d1.getMonth() + 1 === parseInt(mm)) {
+      return `${yyyy}-${mm.padStart(2,'0')}-${dd.padStart(2,'0')}`;
+    }
+    // Fallback: MM/DD/YYYY
+    const d2 = new Date(`${yyyy}-${dd.padStart(2,'0')}-${mm.padStart(2,'0')}T00:00:00`);
+    if (!isNaN(d2)) return `${yyyy}-${dd.padStart(2,'0')}-${mm.padStart(2,'0')}`;
+    return null;
+  }
+
+  // YYYY/MM/DD
+  const ymd = s.match(/^(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})$/);
+  if (ymd) {
+    const [, yyyy, mm, dd] = ymd;
+    const iso = `${yyyy}-${mm.padStart(2,'0')}-${dd.padStart(2,'0')}`;
+    const d = new Date(`${iso}T00:00:00`);
+    return isNaN(d) ? null : iso;
+  }
+
+  // Named month: "1 May 2026", "May 1, 2026", "01-May-2026"
+  const named = s.match(/^(\d{1,2})[\s\-\/]([A-Za-z]{3,9})[\s\-\/,]*(\d{4})$/) ||
+                s.match(/^([A-Za-z]{3,9})[\s\-\/,]+(\d{1,2})[\s\-\/,]*(\d{4})$/);
+  if (named) {
+    const d = new Date(s);
+    if (!isNaN(d)) return d.toISOString().slice(0, 10);
+    return null;
+  }
+
+  return null;
+}
 function today() { return new Date().toISOString().slice(0,10); }
 function showToast(msg) {
   toast.textContent = msg; toast.classList.add("visible");
