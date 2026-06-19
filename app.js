@@ -434,9 +434,8 @@ async function applyBulkFiles(rows, type) {
 }
 
 // ── Other top-level controls ──────────────────────────────────────────────────
-document.getElementById("seedDemo").addEventListener("click", seedDemoData);
-document.getElementById("exportExcel").addEventListener("click", exportExcel);
-document.getElementById("exportExcelTop").addEventListener("click", exportExcel);
+document.getElementById("exportPdf").addEventListener("click", exportPDF);
+document.getElementById("exportPdfTop").addEventListener("click", exportPDF);
 document.getElementById("prepareAllAlerts").addEventListener("click", () => sendSlackAlert());
 
 // ── Alert settings ────────────────────────────────────────────────────────────
@@ -482,13 +481,21 @@ function renderDashboard() {
   const urgent = sums.filter(s => s.status === "Expired" || s.status === "Expiring in 30 Days").sort((a,b) => a.daysLeft - b.daysLeft);
   const uc = (by.Expired||0) + (by["Expiring in 30 Days"]||0);
   document.getElementById("employeeMetric").textContent = state.employees.length;
-  document.getElementById("validMetric").textContent    = by.Valid || 0;
-  document.getElementById("ninetyMetric").textContent   = by["Expiring in 90 Days"] || 0;
   document.getElementById("urgentMetric").textContent   = uc;
   document.getElementById("attentionCount").textContent = `${urgent.length} items`;
   const pill = document.getElementById("overallStatus");
   pill.textContent = uc ? "Action Needed" : "Compliant";
   pill.classList.toggle("risk", Boolean(uc));
+
+  CERT_TYPES.forEach(type => {
+    const sfx = SECTION_SUFFIX[type].toLowerCase();
+    const typeBy = countBy(state.employees.map(e => getCertSummary(e, type)), "status");
+    document.getElementById(`${sfx}ValidMetric`).textContent   = typeBy.Valid || 0;
+    document.getElementById(`${sfx}NinetyMetric`).textContent  = typeBy["Expiring in 90 Days"] || 0;
+    document.getElementById(`${sfx}ThirtyMetric`).textContent  = typeBy["Expiring in 30 Days"] || 0;
+    document.getElementById(`${sfx}ExpiredMetric`).textContent = typeBy.Expired || 0;
+    document.getElementById(`${sfx}MissingMetric`).textContent = typeBy.Missing || 0;
+  });
 
   setRows("attentionRows", urgent.slice(0,8).map(s => `<tr>
     <td>${escHtml(s.emp.name)}<br><small>${escHtml(s.emp.employeeId)}</small></td>
@@ -538,12 +545,15 @@ function renderSectionRows(type) {
       <td><strong>${escHtml(e.name)}</strong></td>
       <td>${escHtml(e.employeeId)}</td>
       <td>${escHtml(e.department)}</td>
-      <td>${badge(sum.status)}</td>
+      <td>
+        <button class="cert-status-btn" type="button" title="Edit ${CERTIFICATES[type].label} certificate" aria-label="Edit ${CERTIFICATES[type].label} certificate" data-action="edit-cert" data-eid="${e.id}" data-type="${type}">
+          ${badge(sum.status)}
+        </button>
+      </td>
       <td>${fmtDate(sum.issueDate)}</td>
       <td>${fmtDate(sum.expiryDate)}</td>
       <td class="cert-file-cell">
         ${fileLink(sum.record.file)}
-        <button class="text-btn" type="button" data-action="edit-cert" data-eid="${e.id}" data-type="${type}">Edit</button>
         ${(sum.record.file || sum.record.issueDate) ? `<button class="icon-btn danger" type="button" title="Delete ${CERTIFICATES[type].label} certificate" aria-label="Delete ${CERTIFICATES[type].label} certificate" data-action="del-cert" data-eid="${e.id}" data-type="${type}">🗑</button>` : ""}
       </td>
       <td class="row-actions">
@@ -690,33 +700,104 @@ function downloadTemplate(type) {
   downloadFile(`uae-kitchen-${type}-template-${today()}.csv`, rows.map(r=>r.map(csvEsc).join(",")).join("\n"), "text/csv;charset=utf-8");
 }
 
-// ── Excel export ──────────────────────────────────────────────────────────────
-function exportExcel() {
-  const hdrs = ["Employee ID","Name","Department","BFS Status","BFS Expiry","BFS File","OHC Status","OHC Expiry","OHC File"];
-  const rows = state.employees.map(e => {
-    const bfs = getCertSummary(e,"bfs"), ohc = getCertSummary(e,"ohc");
-    return [e.employeeId,e.name,e.department,bfs.status,bfs.expiryDate,bfs.record.file?.name||"",ohc.status,ohc.expiryDate,ohc.record.file?.name||""];
-  });
-  const tbl = `<table><thead><tr>${hdrs.map(h=>`<th>${escHtml(h)}</th>`).join("")}</tr></thead><tbody>${rows.map(r=>`<tr>${r.map(c=>`<td>${escHtml(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
-  downloadFile(`uae-kitchen-export-${today()}.xls`,`<!doctype html><html><head><meta charset="UTF-8"></head><body>${tbl}</body></html>`,"application/vnd.ms-excel;charset=utf-8");
-  showToast("Excel export ready.");
-}
+// ── PDF export ────────────────────────────────────────────────────────────────
+function exportPDF() {
+  if (!window.jspdf || !window.jspdf.jsPDF) { showToast("PDF library still loading — try again in a moment."); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "pt", format: "a4" });
+  const pageW = doc.internal.pageSize.getWidth();
+  const margin = 40;
+  let y = 50;
 
-// ── Demo data ─────────────────────────────────────────────────────────────────
-function seedDemoData() {
-  const di = days => { const d=new Date(); d.setDate(d.getDate()+days); return d.toISOString().slice(0,10); };
-  const mk = (type, offset, fn) => {
-    const exp = di(offset);
-    const iss = (() => { const d=new Date(`${exp}T00:00:00`); d.setFullYear(d.getFullYear()-CERTIFICATES[type].validYears); return d.toISOString().slice(0,10); })();
-    return { issueDate:iss, expiryDate:exp, file:{name:fn,type:"application/pdf",size:0,dataUrl:"data:application/pdf;base64,",uploadedAt:new Date().toISOString()}, updatedAt:new Date().toISOString() };
-  };
-  state.employees = [
-    { id:crypto.randomUUID(), name:"Aisha Rahman",   employeeId:"CK-1001", department:"Kitchen",  certificates:{bfs:mk("bfs",140,"CK-1001-bfs.pdf"), ohc:mk("ohc",24,"CK-1001-ohc.pdf")},  createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() },
-    { id:crypto.randomUUID(), name:"Khalid Mansoor", employeeId:"CK-1002", department:"Dispatch", certificates:{bfs:mk("bfs",-12,"CK-1002-bfs.pdf"), ohc:mk("ohc",82,"CK-1002-ohc.pdf")},  createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() },
-    { id:crypto.randomUUID(), name:"Maria Santos",   employeeId:"CK-1003", department:"Kitchen",  certificates:{bfs:mk("bfs",410,"CK-1003-bfs.pdf"), ohc:mk("ohc",9,"CK-1003-ohc.pdf")},   createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() },
-    { id:crypto.randomUUID(), name:"Omar Faris",     employeeId:"CK-1004", department:"Kitchen",  certificates:{bfs:mk("bfs",67,"CK-1004-bfs.pdf"),  ohc:{}},                                createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() },
+  // ── Header ──
+  doc.setFont("helvetica", "bold"); doc.setFontSize(20); doc.setTextColor(17,24,39);
+  doc.text("CALO", margin, y);
+  doc.setFontSize(11); doc.setFont("helvetica","normal"); doc.setTextColor(107,114,128);
+  doc.text("UAE Kitchen Compliance Portal", margin, y + 16);
+  doc.setFontSize(14); doc.setFont("helvetica","bold"); doc.setTextColor(17,24,39);
+  doc.text("Staff Certificate Compliance Report", margin, y + 40);
+  doc.setFontSize(9); doc.setFont("helvetica","normal"); doc.setTextColor(107,114,128);
+  doc.text(`Generated: ${fmtDate(today())}`, margin, y + 56);
+
+  y += 80;
+
+  // ── Executive summary tiles ──
+  const sums = getCertSummaries();
+  const by = countBy(sums, "status");
+  const uc = (by.Expired||0) + (by["Expiring in 30 Days"]||0);
+  const bfsBy = countBy(state.employees.map(e => getCertSummary(e,"bfs")), "status");
+  const ohcBy = countBy(state.employees.map(e => getCertSummary(e,"ohc")), "status");
+
+  doc.setFontSize(11); doc.setFont("helvetica","bold"); doc.setTextColor(17,24,39);
+  doc.text("EXECUTIVE SUMMARY", margin, y);
+  y += 14;
+
+  const tiles = [
+    { label: "TOTAL EMPLOYEES",   value: state.employees.length },
+    { label: "BFS VALID",         value: bfsBy.Valid || 0 },
+    { label: "BFS EXPIRING 30D",  value: bfsBy["Expiring in 30 Days"] || 0 },
+    { label: "BFS EXPIRED",       value: bfsBy.Expired || 0 },
+    { label: "OHC VALID",         value: ohcBy.Valid || 0 },
+    { label: "OHC EXPIRING 30D",  value: ohcBy["Expiring in 30 Days"] || 0 },
+    { label: "OHC EXPIRED",       value: ohcBy.Expired || 0 },
+    { label: "ACTION NEEDED",     value: uc },
   ];
-  persist(); renderAll(); showToast("Sample data loaded.");
+
+  const cols = 4, gap = 10, tileH = 52;
+  const tileW = (pageW - margin*2 - gap*(cols-1)) / cols;
+  tiles.forEach((t, i) => {
+    const col = i % cols, row = Math.floor(i / cols);
+    const x = margin + col * (tileW + gap);
+    const ty = y + row * (tileH + gap);
+    doc.setDrawColor(226,230,236); doc.setFillColor(248,250,252);
+    doc.roundedRect(x, ty, tileW, tileH, 4, 4, "FD");
+    doc.setFontSize(7); doc.setFont("helvetica","bold"); doc.setTextColor(107,114,128);
+    doc.text(t.label, x + 10, ty + 17, { maxWidth: tileW - 20 });
+    doc.setFontSize(18); doc.setFont("helvetica","bold"); doc.setTextColor(17,24,39);
+    doc.text(String(t.value), x + 10, ty + 38);
+  });
+
+  y += Math.ceil(tiles.length / cols) * (tileH + gap) + 18;
+
+  // ── BFS table ──
+  doc.setFontSize(11); doc.setFont("helvetica","bold"); doc.setTextColor(17,24,39);
+  doc.text("BFS — Basic Food Safety", margin, y);
+  doc.autoTable({
+    startY: y + 8,
+    margin: { left: margin, right: margin },
+    head: [["Name","ID","Department","Status","Issue Date","Expiry Date"]],
+    body: state.employees.map(e => { const s = getCertSummary(e,"bfs"); return [e.name, e.employeeId, e.department, s.status, fmtDate(s.issueDate), fmtDate(s.expiryDate)]; }),
+    styles: { fontSize: 8, cellPadding: 5 },
+    headStyles: { fillColor: [22,163,74], textColor: 255, fontStyle: "bold" },
+    theme: "grid",
+  });
+
+  y = doc.lastAutoTable.finalY + 26;
+  if (y > 680) { doc.addPage(); y = 50; }
+
+  // ── OHC table ──
+  doc.setFontSize(11); doc.setFont("helvetica","bold"); doc.setTextColor(17,24,39);
+  doc.text("OHC — Occupational Health Card", margin, y);
+  doc.autoTable({
+    startY: y + 8,
+    margin: { left: margin, right: margin },
+    head: [["Name","ID","Department","Status","Issue Date","Expiry Date"]],
+    body: state.employees.map(e => { const s = getCertSummary(e,"ohc"); return [e.name, e.employeeId, e.department, s.status, fmtDate(s.issueDate), fmtDate(s.expiryDate)]; }),
+    styles: { fontSize: 8, cellPadding: 5 },
+    headStyles: { fillColor: [109,40,217], textColor: 255, fontStyle: "bold" },
+    theme: "grid",
+  });
+
+  // ── Footer on every page ──
+  const pageCount = doc.internal.getNumberOfPages();
+  for (let p = 1; p <= pageCount; p++) {
+    doc.setPage(p);
+    doc.setFontSize(8); doc.setTextColor(156,163,175);
+    doc.text("UAE Kitchen Compliance Portal · Confidential · For internal use", pageW / 2, doc.internal.pageSize.getHeight() - 20, { align: "center" });
+  }
+
+  doc.save(`uae-kitchen-compliance-${today()}.pdf`);
+  showToast("PDF report ready.");
 }
 
 // ── Normalise helpers ─────────────────────────────────────────────────────────
