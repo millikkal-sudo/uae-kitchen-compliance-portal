@@ -198,19 +198,26 @@ tabs.forEach(tab => tab.addEventListener("click", () => {
   views.forEach(v => v.classList.toggle("active-view", v.id === tab.dataset.view));
 }));
 
-// ── Employee form (name + ID + dept only) ─────────────────────────────────────
+// ── Employee form (name + ID + dept + optional BFS/OHC issue dates) ───────────
 employeeForm.addEventListener("submit", e => {
   e.preventDefault();
   const d = formData(e.currentTarget);
   const existing = state.employees.find(x => x.id === d.editingId);
   const dupId = state.employees.find(x => x.employeeId.toLowerCase() === d.employeeId.trim().toLowerCase() && x.id !== d.editingId);
   if (dupId) { showToast("Employee ID already in use."); return; }
+  const certs = existing?.certificates || createEmptyCertificates();
+  if (d.bfsIssueDate && isValidDate(d.bfsIssueDate)) {
+    certs.bfs = { ...(certs.bfs||{}), issueDate: d.bfsIssueDate, expiryDate: calcExpiry(d.bfsIssueDate, CERTIFICATES.bfs.validYears), updatedAt: new Date().toISOString() };
+  }
+  if (d.ohcIssueDate && isValidDate(d.ohcIssueDate)) {
+    certs.ohc = { ...(certs.ohc||{}), issueDate: d.ohcIssueDate, expiryDate: calcExpiry(d.ohcIssueDate, CERTIFICATES.ohc.validYears), updatedAt: new Date().toISOString() };
+  }
   const emp = {
     id: existing?.id || crypto.randomUUID(),
     name: d.name.trim(),
     employeeId: d.employeeId.trim(),
     department: d.department.trim(),
-    certificates: existing?.certificates || createEmptyCertificates(),
+    certificates: certs,
     createdAt: existing?.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -457,9 +464,11 @@ function renderStaffRows() {
       <td>${escHtml(e.employeeId)}</td>
       <td>${escHtml(e.department)}</td>
       <td>${badge(bfs.status)}</td>
+      <td>${fmtDate(bfs.issueDate)}</td>
       <td>${fmtDate(bfs.expiryDate)}</td>
       <td>${fileLink(bfs.record.file)} <button class="text-btn" type="button" data-action="edit-cert" data-eid="${e.id}" data-type="bfs">Edit</button></td>
       <td>${badge(ohc.status)}</td>
+      <td>${fmtDate(ohc.issueDate)}</td>
       <td>${fmtDate(ohc.expiryDate)}</td>
       <td>${fileLink(ohc.record.file)} <button class="text-btn" type="button" data-action="edit-cert" data-eid="${e.id}" data-type="ohc">Edit</button></td>
       <td class="row-actions">
@@ -552,6 +561,8 @@ function editEmployee(id) {
   employeeForm.elements.name.value       = e.name;
   employeeForm.elements.employeeId.value = e.employeeId;
   employeeForm.elements.department.value = e.department;
+  employeeForm.elements.bfsIssueDate.value = e.certificates?.bfs?.issueDate || "";
+  employeeForm.elements.ohcIssueDate.value = e.certificates?.ohc?.issueDate || "";
   document.getElementById("employeeFormTitle").textContent     = `Editing: ${e.name}`;
   document.getElementById("employeeSubmitButton").textContent  = "Save Changes";
   document.getElementById("cancelEmployeeEdit").classList.remove("hidden");
