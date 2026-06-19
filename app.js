@@ -3,24 +3,28 @@ const CLIENT_ID = "942236854237-ecukbhhhmkdm2564vf27e830o9daq69f.apps.googleuser
 const SCOPES = "https://www.googleapis.com/auth/drive.appdata";
 const DRIVE_FILE_NAME = "uae-kitchen-compliance-data.json";
 const AUTHORIZED_DOMAIN = "calo.app";
-const SLACK_ALERT_ENDPOINT = "/api/send-alert";
+const EDITOR_EMAILS = ["m.illikkal@calo.app", "j.swamy@calo.app"];
 
 const CERTIFICATES = {
   bfs: { label: "BFS", fullName: "Basic Food Safety",        validYears: 2 },
   ohc: { label: "OHC", fullName: "Occupational Health Card", validYears: 1 },
 };
-const CERT_TYPES = Object.keys(CERTIFICATES); // ["bfs","ohc"]
-const SECTION_SUFFIX = { bfs: "Bfs", ohc: "Ohc" };
 
-const defaultSettings = { reminderDays: 30 };
+const defaultSettings = { alertsEmail: "compliance.manager@calo.app", reminderDays: 30 };
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let state   = { employees: [], settings: { ...defaultSettings } };
 let session = null;
 let driveFileId = null;
 let saveTimer   = null;
+let activeBulkCertType = "bfs";
 
-// ── DOM refs (shared) ────────────────────────────────────────────────────────
+// ── Role helpers ──────────────────────────────────────────────────────────────
+function isEditor() {
+  return session && EDITOR_EMAILS.includes((session.email || "").toLowerCase());
+}
+
+// ── DOM refs ──────────────────────────────────────────────────────────────────
 const loginView  = document.getElementById("loginView");
 const appShell   = document.getElementById("appShell");
 const toast      = document.getElementById("toast");
@@ -29,7 +33,13 @@ const tabs       = document.querySelectorAll(".nav-tab");
 const syncStatus = document.getElementById("syncStatus");
 const syncLabel  = document.getElementById("syncLabel");
 
-const alertSettingsForm = document.getElementById("alertSettingsForm");
+const employeeForm          = document.getElementById("employeeForm");
+const certificateForm       = document.getElementById("certificateForm");
+const alertSettingsForm     = document.getElementById("alertSettingsForm");
+const bulkUploadForm        = document.getElementById("bulkUploadForm");
+const employeeSearch        = document.getElementById("employeeSearch");
+const employeeDeptFilter    = document.getElementById("employeeDepartmentFilter");
+const employeeStatusFilter  = document.getElementById("employeeStatusFilter");
 
 // ── Google Sign-In ────────────────────────────────────────────────────────────
 function initGoogleSignIn() {
@@ -155,6 +165,7 @@ async function saveToDrive() {
 }
 
 function persist() {
+  if (!isEditor()) return; // read-only users cannot persist
   clearTimeout(saveTimer);
   setSyncState("syncing");
   saveTimer = setTimeout(saveToDrive, 800);
@@ -174,220 +185,191 @@ function signOut() {
 }
 document.getElementById("signOutButton").addEventListener("click", signOut);
 
+// ── Bulk employee upload toggle ───────────────────────────────────────────────
+document.getElementById("showBulkUpload").addEventListener("click", () => {
+  const sec = document.getElementById("bulkEmpSection");
+  const btn = document.getElementById("showBulkUpload");
+  const isHidden = sec.classList.toggle("hidden");
+  btn.textContent = isHidden ? "⬆ Bulk Upload Employees" : "✕ Close";
+});
+
 // ── Tab navigation ────────────────────────────────────────────────────────────
 tabs.forEach(tab => tab.addEventListener("click", () => {
   tabs.forEach(t => t.classList.toggle("active", t === tab));
   views.forEach(v => v.classList.toggle("active-view", v.id === tab.dataset.view));
 }));
 
-function showView(id) {
-  tabs.forEach(t => t.classList.toggle("active", t.dataset.view === id));
-  views.forEach(v => v.classList.toggle("active-view", v.id === id));
+// ── Employee form ─────────────────────────────────────────────────────────────
+employeeForm.addEventListener("submit", e => {
+  e.preventDefault();
+  if (!isEditor()) return;
+  const d = formData(e.currentTarget);
+  const existing = state.employees.find(x => x.id === d.editingId);
+  const dupId = state.employees.find(x => x.employeeId.toLowerCase() === d.employeeId.trim().toLowerCase() && x.id !== d.editingId);
+  if (dupId) { showToast("Employee ID already in use."); return; }
+  const certs = existing?.certificates || createEmptyCertificates();
+  const bfsDate = parseDate(d.bfsIssueDate);
+  const ohcDate = parseDate(d.ohcIssueDate);
+  if (bfsDate) {
+    certs.bfs = { ...(certs.bfs||{}), issueDate: bfsDate, expiryDate: calcExpiry(bfsDate, CERTIFICATES.bfs.validYears), updatedAt: new Date().toISOString() };
+  }
+  if (ohcDate) {
+    certs.ohc = { ...(certs.ohc||{}), issueDate: ohcDate, expiryDate: calcExpiry(ohcDate, CERTIFICATES.ohc.validYears), updatedAt: new Date().toISOString() };
+  }
+  const emp = {
+    id: existing?.id || crypto.randomUUID(),
+    name: d.name.trim(),
+    employeeId: d.employeeId.trim(),
+    department: d.department.trim(),
+    certificates: certs,
+    createdAt: existing?.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  state.employees = existing
+    ? state.employees.map(x => x.id === existing.id ? emp : x)
+    : [emp, ...state.employees];
+  persist(); resetEmployeeForm(); render();
+  showToast(existing ? "Employee updated." : "Employee added.");
+});
+
+document.getElementById("cancelEmployeeEdit").addEventListener("click", resetEmployeeForm);
+
+function resetEmployeeForm() {
+  employeeForm.reset();
+  employeeForm.elements.editingId.value = "";
+  document.getElementById("employeeFormTitle").textContent = "Add Employee";
+  document.getElementById("employeeSubmitButton").textContent = "Add Employee";
+  document.getElementById("cancelEmployeeEdit").classList.add("hidden");
 }
 
-// ── Per-section (BFS / OHC) wiring ─────────────────────────────────────────────
-// Each section ("bfs" / "ohc") has its own: add-employee form, bulk employee CSV
-// upload, bulk certificate-file upload, register table + filters, and a cert
-// edit panel. They all operate on the SAME shared `state.employees` array.
+// ── Certificate form ──────────────────────────────────────────────────────────
+certificateForm.addEventListener("submit", async e => {
+  e.preventDefault();
+  if (!isEditor()) return;
+  const d = formData(e.currentTarget);
+  const emp = state.employees.find(x => x.id === d.employeeId);
+  if (!emp) return;
+  const type = d.type;
+  const file = e.currentTarget.elements.file.files[0];
+  const prev = emp.certificates[type] || {};
+  const uploaded = file ? await readCertFile(file) : prev.file || null;
+  emp.certificates[type] = {
+    issueDate: d.issueDate,
+    expiryDate: d.expiryDate || calcExpiry(d.issueDate, CERTIFICATES[type].validYears),
+    file: uploaded,
+    updatedAt: new Date().toISOString(),
+  };
+  emp.updatedAt = new Date().toISOString();
+  persist(); hideCertEdit(); render();
+  showToast(`${CERTIFICATES[type].label} saved for ${emp.name}.`);
+});
 
-function initSection(type) {
-  const sfx = SECTION_SUFFIX[type];
+certificateForm.elements.issueDate.addEventListener("change", e => {
+  const type = certificateForm.elements.type.value;
+  if (e.target.value && type) certificateForm.elements.expiryDate.value = calcExpiry(e.target.value, CERTIFICATES[type].validYears);
+});
 
-  const employeeForm   = document.getElementById(`employeeForm${sfx}`);
-  const showBulkBtn    = document.getElementById(`showBulkUpload${sfx}`);
-  const bulkEmpSection = document.getElementById(`bulkEmpSection${sfx}`);
-  const bulkUploadForm = document.getElementById(`bulkUploadForm${sfx}`);
-  const downloadTplBtn = document.getElementById(`downloadEmployeeTemplate${sfx}`);
-  const cancelEditBtn  = document.getElementById(`cancelEmployeeEdit${sfx}`);
-
-  const bulkCertInput   = document.getElementById(`bulkCertInput${sfx}`);
-  const bulkCertPreview = document.getElementById(`bulkCertPreview${sfx}`);
-  const bulkCertActions = document.getElementById(`bulkCertActions${sfx}`);
-  const bulkCertConfirm = document.getElementById(`bulkCertConfirm${sfx}`);
-  const bulkCertClear   = document.getElementById(`bulkCertClear${sfx}`);
-
-  const search     = document.getElementById(`employeeSearch${sfx}`);
-  const deptFilter = document.getElementById(`employeeDepartmentFilter${sfx}`);
-  const statFilter = document.getElementById(`employeeStatusFilter${sfx}`);
-
-  const certEditPanel = document.getElementById(`certEditPanel${sfx}`);
-  const certificateForm = document.getElementById(`certificateForm${sfx}`);
-
-  // -- Add / edit employee (only this section's issue-date field is present) --
-  employeeForm.addEventListener("submit", e => {
-    e.preventDefault();
-    const d = formData(e.currentTarget);
-    const existing = state.employees.find(x => x.id === d.editingId);
-    const dupId = state.employees.find(x => x.employeeId.toLowerCase() === d.employeeId.trim().toLowerCase() && x.id !== d.editingId);
-    if (dupId) { showToast("Employee ID already in use."); return; }
-    const certs = existing?.certificates || createEmptyCertificates();
-    const issueDate = parseDate(d[`${type}IssueDate`]);
-    if (issueDate) {
-      certs[type] = { ...(certs[type]||{}), issueDate, expiryDate: calcExpiry(issueDate, CERTIFICATES[type].validYears), updatedAt: new Date().toISOString() };
-    }
-    const emp = {
-      id: existing?.id || crypto.randomUUID(),
-      name: d.name.trim(),
-      employeeId: d.employeeId.trim(),
-      department: d.department.trim(),
-      certificates: certs,
-      createdAt: existing?.createdAt || new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    state.employees = existing
-      ? state.employees.map(x => x.id === existing.id ? emp : x)
-      : [emp, ...state.employees];
-    persist(); resetEmployeeForm(type); renderAll();
-    showToast(existing ? "Employee updated." : "Employee added.");
-  });
-
-  cancelEditBtn.addEventListener("click", () => resetEmployeeForm(type));
-
-  // -- Bulk employee upload toggle --
-  showBulkBtn.addEventListener("click", () => {
-    const isHidden = bulkEmpSection.classList.toggle("hidden");
-    showBulkBtn.textContent = isHidden ? "⬆ Bulk Upload Employees" : "✕ Close";
-  });
-
-  downloadTplBtn.addEventListener("click", () => downloadTemplate(type));
-
-  bulkUploadForm.addEventListener("submit", async e => {
-    e.preventDefault();
-    const file = e.currentTarget.elements.csvFile.files[0];
-    if (!file) return;
-    const result = importFromCsv(await file.text());
-    persist(); e.currentTarget.reset(); renderAll();
-    showToast(`CSV done: ${result.added} added, ${result.updated} updated, ${result.skipped} skipped.`);
-  });
-
-  // -- Bulk certificate file upload (fixed to this section's type) --
-  let rows = [];
-  bulkCertInput.addEventListener("change", () => {
-    if (!bulkCertInput.files?.length) { bulkCertPreview.classList.add("hidden"); bulkCertActions.classList.add("hidden"); return; }
-    rows = buildPreview(bulkCertInput.files);
-    renderPreview(rows, bulkCertPreview, type);
-    bulkCertActions.classList.remove("hidden");
-  });
-
-  bulkCertConfirm.addEventListener("click", async () => {
-    const count = await applyBulkFiles(rows, type);
-    persist(); renderAll();
-    showToast(`${count} ${CERTIFICATES[type].label} file(s) attached.`);
-    bulkCertInput.value = ""; bulkCertPreview.classList.add("hidden"); bulkCertActions.classList.add("hidden"); rows = [];
-  });
-
-  bulkCertClear.addEventListener("click", () => {
-    bulkCertInput.value = ""; bulkCertPreview.classList.add("hidden"); bulkCertActions.classList.add("hidden"); rows = [];
-  });
-
-  // -- Filters --
-  search.addEventListener("input", () => renderSectionRows(type));
-  deptFilter.addEventListener("change", () => renderSectionRows(type));
-  statFilter.addEventListener("change", () => renderSectionRows(type));
-
-  // -- Certificate edit panel for this section --
-  certificateForm.addEventListener("submit", async e => {
-    e.preventDefault();
-    const d = formData(e.currentTarget);
-    const emp = state.employees.find(x => x.id === d.employeeId);
-    if (!emp) return;
-    const file = e.currentTarget.elements.file.files[0];
-    const prev = emp.certificates[type] || {};
-    const uploaded = file ? await readCertFile(file) : prev.file || null;
-    emp.certificates[type] = {
-      issueDate: d.issueDate,
-      expiryDate: d.expiryDate || calcExpiry(d.issueDate, CERTIFICATES[type].validYears),
-      file: uploaded,
-      updatedAt: new Date().toISOString(),
-    };
-    emp.updatedAt = new Date().toISOString();
-    persist(); hideCertEdit(type); renderAll();
-    showToast(`${CERTIFICATES[type].label} saved for ${emp.name}.`);
-  });
-
-  certificateForm.elements.issueDate.addEventListener("change", e => {
-    if (e.target.value) certificateForm.elements.expiryDate.value = calcExpiry(e.target.value, CERTIFICATES[type].validYears);
-  });
-
-  document.getElementById(`cancelCertEdit${sfx}`).addEventListener("click", () => hideCertEdit(type));
-}
-
-function resetEmployeeForm(type) {
-  const sfx = SECTION_SUFFIX[type];
-  const form = document.getElementById(`employeeForm${sfx}`);
-  form.reset();
-  form.elements.editingId.value = "";
-  document.getElementById(`employeeFormTitle${sfx}`).textContent = "Add Employee";
-  document.getElementById(`employeeSubmitButton${sfx}`).textContent = "Add Employee";
-  document.getElementById(`cancelEmployeeEdit${sfx}`).classList.add("hidden");
-}
+document.getElementById("cancelCertEdit").addEventListener("click", hideCertEdit);
 
 function showCertEdit(empId, type) {
+  if (!isEditor()) return;
   const emp = state.employees.find(x => x.id === empId);
   if (!emp) return;
-  const sfx = SECTION_SUFFIX[type];
-  const panel = document.getElementById(`certEditPanel${sfx}`);
-  const certificateForm = document.getElementById(`certificateForm${sfx}`);
-  document.getElementById(`certEditTitle${sfx}`).textContent = `Edit ${CERTIFICATES[type].label} – ${emp.name}`;
+  const panel = document.getElementById("certEditPanel");
+  document.getElementById("certEditTitle").textContent = `Edit ${CERTIFICATES[type].label} – ${emp.name}`;
   certificateForm.elements.employeeId.value = empId;
+  certificateForm.elements.type.value = type;
   certificateForm.elements.issueDate.value  = emp.certificates[type]?.issueDate  || "";
   certificateForm.elements.expiryDate.value = emp.certificates[type]?.expiryDate || "";
   panel.classList.remove("hidden");
   panel.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-function hideCertEdit(type) {
-  const sfx = SECTION_SUFFIX[type];
-  document.getElementById(`certEditPanel${sfx}`).classList.add("hidden");
-  document.getElementById(`certificateForm${sfx}`).reset();
+function hideCertEdit() {
+  document.getElementById("certEditPanel").classList.add("hidden");
+  certificateForm.reset();
 }
 
-function editEmployee(id, type) {
-  const e = state.employees.find(x => x.id === id);
-  if (!e) return;
-  const sfx = SECTION_SUFFIX[type];
-  const form = document.getElementById(`employeeForm${sfx}`);
-  form.elements.editingId.value  = e.id;
-  form.elements.name.value       = e.name;
-  form.elements.employeeId.value = e.employeeId;
-  form.elements.department.value = e.department;
-  form.elements[`${type}IssueDate`].value = e.certificates?.[type]?.issueDate || "";
-  document.getElementById(`employeeFormTitle${sfx}`).textContent     = `Editing: ${e.name}`;
-  document.getElementById(`employeeSubmitButton${sfx}`).textContent  = "Save Changes";
-  document.getElementById(`cancelEmployeeEdit${sfx}`).classList.remove("hidden");
-  showView(type);
-  form.elements.name.focus();
-  form.scrollIntoView({ behavior: "smooth", block: "start" });
+// ── Quick file upload (+ button) ──────────────────────────────────────────────
+async function quickUploadCert(empId, type) {
+  if (!isEditor()) return;
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".pdf,image/*";
+  input.onchange = async () => {
+    const file = input.files[0];
+    if (!file) return;
+    const emp = state.employees.find(x => x.id === empId);
+    if (!emp) return;
+    try {
+      const uploaded = await readCertFile(file);
+      emp.certificates[type] = { ...(emp.certificates[type]||{}), file: uploaded, updatedAt: new Date().toISOString() };
+      emp.updatedAt = new Date().toISOString();
+      persist(); render();
+      showToast(`${CERTIFICATES[type].label} file uploaded for ${emp.name}.`);
+    } catch(err) {
+      // readCertFile already shows toast on bad type
+    }
+  };
+  input.click();
 }
 
-function deleteEmployee(id) {
-  const e = state.employees.find(x => x.id === id);
-  if (!e || !confirm(`Remove ${e.name}?`)) return;
-  state.employees = state.employees.filter(x => x.id !== id);
-  persist(); renderAll(); showToast("Employee removed.");
-}
-
-function clearCertificate(empId, type) {
-  const e = state.employees.find(x => x.id === empId);
-  if (!e) return;
-  if (!confirm(`Delete the ${CERTIFICATES[type].label} certificate for ${e.name}? This removes the uploaded file and dates.`)) return;
-  e.certificates[type] = {};
-  e.updatedAt = new Date().toISOString();
-  persist(); renderAll();
-  showToast(`${CERTIFICATES[type].label} certificate deleted for ${e.name}.`);
-}
-
-document.body.addEventListener("click", e => {
-  const btn = e.target.closest("[data-action]");
-  if (!btn) return;
-  const a = btn.dataset.action;
-  if (a === "edit-emp")  editEmployee(btn.dataset.id, btn.dataset.section);
-  if (a === "del-emp")   deleteEmployee(btn.dataset.id);
-  if (a === "edit-cert") showCertEdit(btn.dataset.eid, btn.dataset.type);
-  if (a === "del-cert")  clearCertificate(btn.dataset.eid, btn.dataset.type);
+// ── Alert settings ────────────────────────────────────────────────────────────
+alertSettingsForm.addEventListener("submit", e => {
+  e.preventDefault();
+  if (!isEditor()) return;
+  const d = formData(e.currentTarget);
+  state.settings = { alertsEmail: d.alertsEmail.trim().toLowerCase(), reminderDays: Number(d.reminderDays) };
+  persist(); render(); sendEmailAlert();
 });
 
-// ── Bulk certificate file matching (shared logic, parameterized by type) ─────
+// ── Bulk employee CSV ─────────────────────────────────────────────────────────
+bulkUploadForm.addEventListener("submit", async e => {
+  e.preventDefault();
+  if (!isEditor()) return;
+  const file = e.currentTarget.elements.csvFile.files[0];
+  if (!file) return;
+  const result = importFromCsv(await file.text());
+  persist(); e.currentTarget.reset(); render();
+  showToast(`CSV done: ${result.added} added, ${result.updated} updated, ${result.skipped} skipped.`);
+});
+
+// ── Unified bulk certificate upload ──────────────────────────────────────────
+(function initBulkCert() {
+  const typeBtns   = document.querySelectorAll(".type-btn");
+  const input      = document.getElementById("bulkCertInput");
+  const previewEl  = document.getElementById("bulkCertPreview");
+  const actionsEl  = document.getElementById("bulkCertActions");
+  const confirmBtn = document.getElementById("bulkCertConfirm");
+  const clearBtn   = document.getElementById("bulkCertClear");
+  let rows = [];
+
+  typeBtns.forEach(btn => btn.addEventListener("click", () => {
+    typeBtns.forEach(b => b.classList.toggle("active", b === btn));
+    activeBulkCertType = btn.dataset.cert;
+    if (input.files?.length) { rows = buildPreview(input.files); renderPreview(rows, previewEl); actionsEl.classList.remove("hidden"); }
+  }));
+
+  input.addEventListener("change", () => {
+    if (!input.files?.length) { previewEl.classList.add("hidden"); actionsEl.classList.add("hidden"); return; }
+    rows = buildPreview(input.files);
+    renderPreview(rows, previewEl);
+    actionsEl.classList.remove("hidden");
+  });
+
+  confirmBtn.addEventListener("click", async () => {
+    if (!isEditor()) { showToast("You don't have permission to upload files."); return; }
+    const count = await applyBulkFiles(rows, activeBulkCertType);
+    persist(); render();
+    showToast(`${count} ${CERTIFICATES[activeBulkCertType].label} file(s) attached.`);
+    input.value = ""; previewEl.classList.add("hidden"); actionsEl.classList.add("hidden"); rows = [];
+  });
+
+  clearBtn.addEventListener("click", () => {
+    input.value = ""; previewEl.classList.add("hidden"); actionsEl.classList.add("hidden"); rows = [];
+  });
+})();
+
 function buildPreview(files) {
   return Array.from(files).map(f => ({ file: f, match: matchFile(f.name) }));
 }
@@ -409,9 +391,9 @@ function matchFile(fileName) {
   return emp ? { employee: emp } : null;
 }
 
-function renderPreview(rows, el, type) {
+function renderPreview(rows, el) {
   const matched = rows.filter(r => r.match).length;
-  let html = `<p class="bulk-summary">${matched} of ${rows.length} file(s) matched · Type: <strong>${CERTIFICATES[type].label}</strong></p>`;
+  let html = `<p class="bulk-summary">${matched} of ${rows.length} file(s) matched · Type: <strong>${CERTIFICATES[activeBulkCertType].label}</strong></p>`;
   html += `<div class="table-wrap"><table><thead><tr><th>File</th><th>Matched Employee</th></tr></thead><tbody>`;
   rows.forEach(r => {
     html += `<tr><td>${escHtml(r.file.name)}</td><td>${r.match ? `<span class="status-valid">${escHtml(r.match.employee.name)}</span>` : `<span class="status-expired">No match</span>`}</td></tr>`;
@@ -433,18 +415,18 @@ async function applyBulkFiles(rows, type) {
   return count;
 }
 
-// ── Other top-level controls ──────────────────────────────────────────────────
-document.getElementById("exportPdf").addEventListener("click", exportPDF);
-document.getElementById("exportPdfTop").addEventListener("click", exportPDF);
-document.getElementById("prepareAllAlerts").addEventListener("click", () => sendSlackAlert());
-
-// ── Alert settings ────────────────────────────────────────────────────────────
-alertSettingsForm.addEventListener("submit", e => {
-  e.preventDefault();
-  const d = formData(e.currentTarget);
-  state.settings = { reminderDays: Number(d.reminderDays) };
-  persist(); renderAll(); sendSlackAlert();
+// ── Filters ───────────────────────────────────────────────────────────────────
+employeeSearch.addEventListener("input",       renderStaffRows);
+employeeDeptFilter.addEventListener("change",  renderStaffRows);
+employeeStatusFilter.addEventListener("change",renderStaffRows);
+document.getElementById("seedDemo").addEventListener("click", () => {
+  if (!isEditor()) { showToast("Only editors can load sample data."); return; }
+  seedDemoData();
 });
+document.getElementById("exportExcel").addEventListener("click", exportExcel);
+document.getElementById("exportExcelTop").addEventListener("click", exportExcel);
+document.getElementById("prepareAllAlerts").addEventListener("click", sendEmailAlert);
+document.getElementById("downloadEmployeeTemplate").addEventListener("click", downloadTemplate);
 
 // ── Render ────────────────────────────────────────────────────────────────────
 function render() {
@@ -453,26 +435,33 @@ function render() {
   appShell.classList.toggle("hidden", !ok);
   document.getElementById("signedInEmail").textContent = session?.email || "—";
   if (!ok) return;
-  renderAll();
-}
 
-function renderAll() {
+  const editor = isEditor();
+
+  // Show/hide editor-only UI elements
+  document.querySelectorAll(".editor-only").forEach(el => {
+    el.classList.toggle("hidden", !editor);
+  });
+
+  // Show role badge
+  const roleBadge = document.getElementById("roleBadge");
+  if (roleBadge) {
+    roleBadge.textContent = editor ? "Editor" : "Viewer";
+    roleBadge.className = "role-badge " + (editor ? "role-editor" : "role-viewer");
+  }
+
   renderDeptFilterOptions();
   renderDashboard();
-  CERT_TYPES.forEach(renderSectionRows);
+  renderStaffRows();
   renderAlertSettings();
   renderAlertQueue();
 }
 
 function renderDeptFilterOptions() {
+  const cur = employeeDeptFilter.value || "all";
   const depts = [...new Set(state.employees.map(e => e.department).filter(Boolean))].sort((a,b) => a.localeCompare(b));
-  CERT_TYPES.forEach(type => {
-    const sfx = SECTION_SUFFIX[type];
-    const el = document.getElementById(`employeeDepartmentFilter${sfx}`);
-    const cur = el.value || "all";
-    el.innerHTML = ['<option value="all">All departments</option>', ...depts.map(d => `<option value="${escHtml(d)}">${escHtml(d)}</option>`)].join("");
-    el.value = depts.includes(cur) ? cur : "all";
-  });
+  employeeDeptFilter.innerHTML = ['<option value="all">All departments</option>', ...depts.map(d => `<option value="${escHtml(d)}">${escHtml(d)}</option>`)].join("");
+  employeeDeptFilter.value = depts.includes(cur) ? cur : "all";
 }
 
 function renderDashboard() {
@@ -481,28 +470,20 @@ function renderDashboard() {
   const urgent = sums.filter(s => s.status === "Expired" || s.status === "Expiring in 30 Days").sort((a,b) => a.daysLeft - b.daysLeft);
   const uc = (by.Expired||0) + (by["Expiring in 30 Days"]||0);
   document.getElementById("employeeMetric").textContent = state.employees.length;
+  document.getElementById("validMetric").textContent    = by.Valid || 0;
+  document.getElementById("ninetyMetric").textContent   = by["Expiring in 90 Days"] || 0;
   document.getElementById("urgentMetric").textContent   = uc;
   document.getElementById("attentionCount").textContent = `${urgent.length} items`;
   const pill = document.getElementById("overallStatus");
   pill.textContent = uc ? "Action Needed" : "Compliant";
   pill.classList.toggle("risk", Boolean(uc));
 
-  CERT_TYPES.forEach(type => {
-    const sfx = SECTION_SUFFIX[type].toLowerCase();
-    const typeBy = countBy(state.employees.map(e => getCertSummary(e, type)), "status");
-    document.getElementById(`${sfx}ValidMetric`).textContent   = typeBy.Valid || 0;
-    document.getElementById(`${sfx}NinetyMetric`).textContent  = typeBy["Expiring in 90 Days"] || 0;
-    document.getElementById(`${sfx}ThirtyMetric`).textContent  = typeBy["Expiring in 30 Days"] || 0;
-    document.getElementById(`${sfx}ExpiredMetric`).textContent = typeBy.Expired || 0;
-    document.getElementById(`${sfx}MissingMetric`).textContent = typeBy.Missing || 0;
-  });
-
   setRows("attentionRows", urgent.slice(0,8).map(s => `<tr>
     <td>${escHtml(s.emp.name)}<br><small>${escHtml(s.emp.employeeId)}</small></td>
     <td>${escHtml(s.cert.label)}</td>
     <td>${fmtDate(s.expiryDate)}</td>
     <td>${badge(s.status)}</td>
-    <td><button class="text-btn" type="button" data-slack-item='${escAttr(JSON.stringify(summaryToItem(s)))}'>Send to Slack</button></td>
+    <td><a class="table-link" href="${mailto(s)}">Email Alert</a></td>
   </tr>`), 5, "No urgent renewals.");
 
   const grouped = sums.reduce((g, s) => {
@@ -518,53 +499,75 @@ function renderDashboard() {
   ).join("") || '<div class="empty-state">No records yet.</div>';
 }
 
-function renderSectionRows(type) {
-  const sfx = SECTION_SUFFIX[type];
-  const search     = document.getElementById(`employeeSearch${sfx}`);
-  const deptFilter = document.getElementById(`employeeDepartmentFilter${sfx}`);
-  const statFilter = document.getElementById(`employeeStatusFilter${sfx}`);
-
-  const q    = search.value.trim().toLowerCase();
-  const dept = deptFilter.value;
-  const stat = statFilter.value;
+function renderStaffRows() {
+  const q    = employeeSearch.value.trim().toLowerCase();
+  const dept = employeeDeptFilter.value;
+  const stat = employeeStatusFilter.value;
+  const editor = isEditor();
 
   const emps = state.employees.filter(e => {
     const searchable = [e.name, e.employeeId, e.department].join(" ").toLowerCase();
-    const sum = getCertSummary(e, type);
+    const sums = Object.keys(CERTIFICATES).map(t => getCertSummary(e,t));
     const matchQ    = searchable.includes(q);
     const matchDept = dept === "all" || e.department === dept;
-    const matchStat = stat === "all" || (stat === "Expiring"
-      ? (sum.status === "Expiring in 30 Days" || sum.status === "Expiring in 90 Days")
-      : sum.status === stat);
+    const matchStat = stat === "all" || sums.some(s => {
+      if (stat === "Expiring") return s.status === "Expiring in 30 Days" || s.status === "Expiring in 90 Days";
+      return s.status === stat;
+    });
     return matchQ && matchDept && matchStat;
   });
 
-  setRows(`staffRows${sfx}`, emps.map(e => {
-    const sum = getCertSummary(e, type);
+  setRows("staffRows", emps.map(e => {
+    const bfs = getCertSummary(e, "bfs");
+    const ohc = getCertSummary(e, "ohc");
+
+    // File cell: download link + (editor: Edit button + plus button | viewer: just download)
+    const bfsFileCell = fileCellHtml(bfs, e.id, "bfs", editor);
+    const ohcFileCell = fileCellHtml(ohc, e.id, "ohc", editor);
+
+    const actionsCell = editor
+      ? `<td class="row-actions">
+          <button class="text-btn" type="button" data-action="edit-emp" data-id="${e.id}">Edit</button>
+          <button class="text-btn danger" type="button" data-action="del-emp" data-id="${e.id}">Remove</button>
+        </td>`
+      : `<td class="row-actions"><span class="muted">—</span></td>`;
+
     return `<tr>
       <td><strong>${escHtml(e.name)}</strong></td>
       <td>${escHtml(e.employeeId)}</td>
       <td>${escHtml(e.department)}</td>
-      <td>
-        <button class="cert-status-btn" type="button" title="Edit ${CERTIFICATES[type].label} certificate" aria-label="Edit ${CERTIFICATES[type].label} certificate" data-action="edit-cert" data-eid="${e.id}" data-type="${type}">
-          ${badge(sum.status)}
-        </button>
-      </td>
-      <td>${fmtDate(sum.issueDate)}</td>
-      <td>${fmtDate(sum.expiryDate)}</td>
-      <td class="cert-file-cell">
-        ${fileLink(sum.record.file)}
-        ${(sum.record.file || sum.record.issueDate) ? `<button class="icon-btn danger" type="button" title="Delete ${CERTIFICATES[type].label} certificate" aria-label="Delete ${CERTIFICATES[type].label} certificate" data-action="del-cert" data-eid="${e.id}" data-type="${type}">🗑</button>` : ""}
-      </td>
-      <td class="row-actions">
-        <button class="text-btn" type="button" data-action="edit-emp" data-id="${e.id}" data-section="${type}">Edit</button>
-        <button class="text-btn danger" type="button" data-action="del-emp" data-id="${e.id}">Remove</button>
-      </td>
+      <td>${badge(bfs.status)}</td>
+      <td>${fmtDate(bfs.issueDate)}</td>
+      <td>${fmtDate(bfs.expiryDate)}</td>
+      ${bfsFileCell}
+      <td>${badge(ohc.status)}</td>
+      <td>${fmtDate(ohc.issueDate)}</td>
+      <td>${fmtDate(ohc.expiryDate)}</td>
+      ${ohcFileCell}
+      ${actionsCell}
     </tr>`;
-  }), 8, "No employees match this filter.");
+  }), 12, "No employees match this filter.");
+  wireActions();
+}
+
+function fileCellHtml(certSummary, empId, type, editor) {
+  const hasFile = Boolean(certSummary.record.file?.dataUrl);
+  const downloadPart = hasFile
+    ? `<a class="table-link" href="${certSummary.record.file.dataUrl}" download="${escHtml(certSummary.record.file.name)}">${escHtml(certSummary.record.file.name)}</a>`
+    : `<span class="muted">—</span>`;
+
+  if (!editor) {
+    return `<td>${downloadPart}</td>`;
+  }
+
+  const editBtn = `<button class="text-btn" type="button" data-action="edit-cert" data-eid="${empId}" data-type="${type}">Edit</button>`;
+  const plusBtn = `<button class="plus-btn" type="button" title="Upload ${CERTIFICATES[type].label} file" data-action="quick-upload" data-eid="${empId}" data-type="${type}">+</button>`;
+
+  return `<td class="file-cell">${downloadPart} <span class="file-cell-actions">${plusBtn}${editBtn}</span></td>`;
 }
 
 function renderAlertSettings() {
+  alertSettingsForm.elements.alertsEmail.value  = state.settings.alertsEmail;
   alertSettingsForm.elements.reminderDays.value = String(state.settings.reminderDays);
 }
 
@@ -576,25 +579,14 @@ function renderAlertQueue() {
           <strong>${escHtml(s.emp.name)} · ${escHtml(s.cert.label)} ${escHtml(s.status.toLowerCase())}</strong>
           <span>${escHtml(s.emp.department)} · expires ${fmtDate(s.expiryDate)} · ${fmtDays(s.daysLeft)}</span>
         </div>
-        <div class="alert-actions"><button class="primary-btn" type="button" data-slack-item='${escAttr(JSON.stringify(summaryToItem(s)))}'>Send to Slack</button></div>
+        <div class="alert-actions"><a class="primary-btn" href="${mailto(s)}">Prepare Alert</a></div>
       </div>`).join("")
     : '<div class="empty-state">No alerts due.</div>';
 }
 
-document.getElementById("alertQueue").addEventListener("click", e => {
-  const btn = e.target.closest("[data-slack-item]");
-  if (!btn) return;
-  sendSlackAlert([JSON.parse(btn.dataset.slackItem)]);
-});
-document.getElementById("attentionRows").addEventListener("click", e => {
-  const btn = e.target.closest("[data-slack-item]");
-  if (!btn) return;
-  sendSlackAlert([JSON.parse(btn.dataset.slackItem)]);
-});
-
 // ── Certificate logic ─────────────────────────────────────────────────────────
 function getCertSummaries() {
-  return state.employees.flatMap(e => CERT_TYPES.map(t => getCertSummary(e,t)));
+  return state.employees.flatMap(e => Object.keys(CERTIFICATES).map(t => getCertSummary(e,t)));
 }
 function getCertSummary(emp, type) {
   const cert   = CERTIFICATES[type];
@@ -622,45 +614,73 @@ function calcExpiry(issue, years) {
   return d.toISOString().slice(0,10);
 }
 
-// ── Slack alerts ──────────────────────────────────────────────────────────────
-function summaryToItem(s) {
-  return {
-    employeeName: s.emp.name,
-    employeeId: s.emp.employeeId,
-    department: s.emp.department,
-    certType: s.cert.label,
-    certFullName: s.cert.fullName,
-    status: s.status,
-    expiryDate: s.expiryDate || null,
-    daysLeft: isFinite(s.daysLeft) ? s.daysLeft : null,
-  };
-}
-
+// ── Alert helpers ─────────────────────────────────────────────────────────────
 function getAlertItems() {
   return getCertSummaries()
     .filter(s => s.status !== "Missing" && (s.daysLeft < 0 || s.daysLeft <= state.settings.reminderDays))
     .sort((a,b) => a.daysLeft - b.daysLeft);
 }
-
-async function sendSlackAlert(itemsOverride) {
-  const items = itemsOverride || getAlertItems().map(summaryToItem);
+function sendEmailAlert() {
+  const items = getAlertItems();
   if (!items.length) { showToast("No alerts due."); return; }
-  showToast("Sending to Slack…");
-  try {
-    const res = await fetch(SLACK_ALERT_ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items, reminderDays: state.settings.reminderDays, sentBy: session?.email || "unknown" }),
+  const subj = encodeURIComponent(`UAE Kitchen certificate alerts – ${items.length} items`);
+  const body = encodeURIComponent([
+    "Hello Compliance Team,", "",
+    `${items.length} certificate renewal(s) need attention (within ${state.settings.reminderDays} days or overdue):`, "",
+    items.map(s => `- ${s.emp.name} (${s.emp.employeeId}) · ${s.cert.label}: ${s.status} · Expires: ${fmtDate(s.expiryDate)}`).join("\n"),
+    "", "UAE Kitchen – Compliance Portal",
+  ].join("\n"));
+  window.location.href = `mailto:${encodeURIComponent(state.settings.alertsEmail)}?subject=${subj}&body=${body}`;
+  showToast("Opening mail client…");
+}
+function mailto(s) {
+  const subj = encodeURIComponent(`${s.cert.label} certificate ${s.status.toLowerCase()} – ${s.emp.name}`);
+  const body = encodeURIComponent([`${s.emp.name}'s ${s.cert.fullName} is ${s.status.toLowerCase()}.`,`Employee ID: ${s.emp.employeeId}`,`Department: ${s.emp.department}`,`Expiry: ${fmtDate(s.expiryDate)}`,`${fmtDays(s.daysLeft)}`,"","UAE Kitchen – Compliance Portal"].join("\n"));
+  return `mailto:${encodeURIComponent(state.settings.alertsEmail)}?subject=${subj}&body=${body}`;
+}
+
+// ── Employee actions ──────────────────────────────────────────────────────────
+function editEmployee(id) {
+  if (!isEditor()) return;
+  const e = state.employees.find(x => x.id === id);
+  if (!e) return;
+  employeeForm.elements.editingId.value  = e.id;
+  employeeForm.elements.name.value       = e.name;
+  employeeForm.elements.employeeId.value = e.employeeId;
+  employeeForm.elements.department.value = e.department;
+  employeeForm.elements.bfsIssueDate.value = e.certificates?.bfs?.issueDate || "";
+  employeeForm.elements.ohcIssueDate.value = e.certificates?.ohc?.issueDate || "";
+  document.getElementById("employeeFormTitle").textContent     = `Editing: ${e.name}`;
+  document.getElementById("employeeSubmitButton").textContent  = "Save Changes";
+  document.getElementById("cancelEmployeeEdit").classList.remove("hidden");
+  showView("staff");
+  employeeForm.elements.name.focus();
+  employeeForm.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+function deleteEmployee(id) {
+  if (!isEditor()) return;
+  const e = state.employees.find(x => x.id === id);
+  if (!e || !confirm(`Remove ${e.name}?`)) return;
+  state.employees = state.employees.filter(x => x.id !== id);
+  persist(); render(); showToast("Employee removed.");
+}
+
+function wireActions() {
+  document.querySelectorAll("[data-action]").forEach(btn => {
+    if (btn._wired) return; btn._wired = true;
+    btn.addEventListener("click", () => {
+      const a = btn.dataset.action;
+      if (a === "edit-emp")     editEmployee(btn.dataset.id);
+      if (a === "del-emp")      deleteEmployee(btn.dataset.id);
+      if (a === "edit-cert")    showCertEdit(btn.dataset.eid, btn.dataset.type);
+      if (a === "quick-upload") quickUploadCert(btn.dataset.eid, btn.dataset.type);
     });
-    if (!res.ok) {
-      const err = await res.json().catch(()=>({}));
-      throw new Error(err.error || `HTTP ${res.status}`);
-    }
-    showToast(`Sent ${items.length} alert(s) to Slack.`);
-  } catch (e) {
-    console.error("Slack alert failed:", e);
-    showToast("Slack alert failed — check server configuration.");
-  }
+  });
+}
+
+function showView(id) {
+  tabs.forEach(t => t.classList.toggle("active", t.dataset.view === id));
+  views.forEach(v => v.classList.toggle("active-view", v.id === id));
 }
 
 // ── CSV import ────────────────────────────────────────────────────────────────
@@ -693,116 +713,46 @@ function findRecKey(rec, prefix) {
   return key ? rec[key] : "";
 }
 
-function downloadTemplate(type) {
-  const rows = type === "bfs"
-    ? [["employeeId","name","department","bfsIssueDate"], ["CK-1001","Sample Employee","Kitchen","2026-01-15"]]
-    : [["employeeId","name","department","ohcIssueDate"], ["CK-1001","Sample Employee","Kitchen","2026-03-01"]];
-  downloadFile(`uae-kitchen-${type}-template-${today()}.csv`, rows.map(r=>r.map(csvEsc).join(",")).join("\n"), "text/csv;charset=utf-8");
+function downloadTemplate() {
+  const rows = [
+    ["employeeId","name","department","bfsIssueDate","ohcIssueDate"],
+    ["CK-1001","Sample Employee","Kitchen","2026-01-15","2026-03-01"],
+  ];
+  downloadFile(`uae-kitchen-template-${today()}.csv`, rows.map(r=>r.map(csvEsc).join(",")).join("\n"), "text/csv;charset=utf-8");
 }
 
-// ── PDF export ────────────────────────────────────────────────────────────────
-function exportPDF() {
-  if (!window.jspdf || !window.jspdf.jsPDF) { showToast("PDF library still loading — try again in a moment."); return; }
-  const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ unit: "pt", format: "a4" });
-  const pageW = doc.internal.pageSize.getWidth();
-  const margin = 40;
-  let y = 50;
+// ── Excel export ──────────────────────────────────────────────────────────────
+function exportExcel() {
+  const hdrs = ["Employee ID","Name","Department","BFS Status","BFS Expiry","BFS File","OHC Status","OHC Expiry","OHC File"];
+  const rows = state.employees.map(e => {
+    const bfs = getCertSummary(e,"bfs"), ohc = getCertSummary(e,"ohc");
+    return [e.employeeId,e.name,e.department,bfs.status,bfs.expiryDate,bfs.record.file?.name||"",ohc.status,ohc.expiryDate,ohc.record.file?.name||""];
+  });
+  const tbl = `<table><thead><tr>${hdrs.map(h=>`<th>${escHtml(h)}</th>`).join("")}</tr></thead><tbody>${rows.map(r=>`<tr>${r.map(c=>`<td>${escHtml(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+  downloadFile(`uae-kitchen-export-${today()}.xls`,`<!doctype html><html><head><meta charset="UTF-8"></head><body>${tbl}</body></html>`,"application/vnd.ms-excel;charset=utf-8");
+  showToast("Excel export ready.");
+}
 
-  // ── Header ──
-  doc.setFont("helvetica", "bold"); doc.setFontSize(20); doc.setTextColor(17,24,39);
-  doc.text("CALO", margin, y);
-  doc.setFontSize(11); doc.setFont("helvetica","normal"); doc.setTextColor(107,114,128);
-  doc.text("UAE Kitchen Compliance Portal", margin, y + 16);
-  doc.setFontSize(14); doc.setFont("helvetica","bold"); doc.setTextColor(17,24,39);
-  doc.text("Staff Certificate Compliance Report", margin, y + 40);
-  doc.setFontSize(9); doc.setFont("helvetica","normal"); doc.setTextColor(107,114,128);
-  doc.text(`Generated: ${fmtDate(today())}`, margin, y + 56);
-
-  y += 80;
-
-  // ── Executive summary tiles ──
-  const sums = getCertSummaries();
-  const by = countBy(sums, "status");
-  const uc = (by.Expired||0) + (by["Expiring in 30 Days"]||0);
-  const bfsBy = countBy(state.employees.map(e => getCertSummary(e,"bfs")), "status");
-  const ohcBy = countBy(state.employees.map(e => getCertSummary(e,"ohc")), "status");
-
-  doc.setFontSize(11); doc.setFont("helvetica","bold"); doc.setTextColor(17,24,39);
-  doc.text("EXECUTIVE SUMMARY", margin, y);
-  y += 14;
-
-  const tiles = [
-    { label: "TOTAL EMPLOYEES",   value: state.employees.length },
-    { label: "BFS VALID",         value: bfsBy.Valid || 0 },
-    { label: "BFS EXPIRING 30D",  value: bfsBy["Expiring in 30 Days"] || 0 },
-    { label: "BFS EXPIRED",       value: bfsBy.Expired || 0 },
-    { label: "OHC VALID",         value: ohcBy.Valid || 0 },
-    { label: "OHC EXPIRING 30D",  value: ohcBy["Expiring in 30 Days"] || 0 },
-    { label: "OHC EXPIRED",       value: ohcBy.Expired || 0 },
-    { label: "ACTION NEEDED",     value: uc },
+// ── Demo data ─────────────────────────────────────────────────────────────────
+function seedDemoData() {
+  const di = days => { const d=new Date(); d.setDate(d.getDate()+days); return d.toISOString().slice(0,10); };
+  const mk = (type, offset, fn) => {
+    const exp = di(offset);
+    const iss = (() => { const d=new Date(`${exp}T00:00:00`); d.setFullYear(d.getFullYear()-CERTIFICATES[type].validYears); return d.toISOString().slice(0,10); })();
+    return { issueDate:iss, expiryDate:exp, file:{name:fn,type:"application/pdf",size:0,dataUrl:"data:application/pdf;base64,",uploadedAt:new Date().toISOString()}, updatedAt:new Date().toISOString() };
+  };
+  state.employees = [
+    { id:crypto.randomUUID(), name:"Aisha Rahman",   employeeId:"CK-1001", department:"Kitchen",  certificates:{bfs:mk("bfs",140,"CK-1001-bfs.pdf"), ohc:mk("ohc",24,"CK-1001-ohc.pdf")},  createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() },
+    { id:crypto.randomUUID(), name:"Khalid Mansoor", employeeId:"CK-1002", department:"Dispatch", certificates:{bfs:mk("bfs",-12,"CK-1002-bfs.pdf"), ohc:mk("ohc",82,"CK-1002-ohc.pdf")},  createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() },
+    { id:crypto.randomUUID(), name:"Maria Santos",   employeeId:"CK-1003", department:"Kitchen",  certificates:{bfs:mk("bfs",410,"CK-1003-bfs.pdf"), ohc:mk("ohc",9,"CK-1003-ohc.pdf")},   createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() },
+    { id:crypto.randomUUID(), name:"Omar Faris",     employeeId:"CK-1004", department:"Kitchen",  certificates:{bfs:mk("bfs",67,"CK-1004-bfs.pdf"),  ohc:{}},                                createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() },
   ];
-
-  const cols = 4, gap = 10, tileH = 52;
-  const tileW = (pageW - margin*2 - gap*(cols-1)) / cols;
-  tiles.forEach((t, i) => {
-    const col = i % cols, row = Math.floor(i / cols);
-    const x = margin + col * (tileW + gap);
-    const ty = y + row * (tileH + gap);
-    doc.setDrawColor(226,230,236); doc.setFillColor(248,250,252);
-    doc.roundedRect(x, ty, tileW, tileH, 4, 4, "FD");
-    doc.setFontSize(7); doc.setFont("helvetica","bold"); doc.setTextColor(107,114,128);
-    doc.text(t.label, x + 10, ty + 17, { maxWidth: tileW - 20 });
-    doc.setFontSize(18); doc.setFont("helvetica","bold"); doc.setTextColor(17,24,39);
-    doc.text(String(t.value), x + 10, ty + 38);
-  });
-
-  y += Math.ceil(tiles.length / cols) * (tileH + gap) + 18;
-
-  // ── BFS table ──
-  doc.setFontSize(11); doc.setFont("helvetica","bold"); doc.setTextColor(17,24,39);
-  doc.text("BFS — Basic Food Safety", margin, y);
-  doc.autoTable({
-    startY: y + 8,
-    margin: { left: margin, right: margin },
-    head: [["Name","ID","Department","Status","Issue Date","Expiry Date"]],
-    body: state.employees.map(e => { const s = getCertSummary(e,"bfs"); return [e.name, e.employeeId, e.department, s.status, fmtDate(s.issueDate), fmtDate(s.expiryDate)]; }),
-    styles: { fontSize: 8, cellPadding: 5 },
-    headStyles: { fillColor: [22,163,74], textColor: 255, fontStyle: "bold" },
-    theme: "grid",
-  });
-
-  y = doc.lastAutoTable.finalY + 26;
-  if (y > 680) { doc.addPage(); y = 50; }
-
-  // ── OHC table ──
-  doc.setFontSize(11); doc.setFont("helvetica","bold"); doc.setTextColor(17,24,39);
-  doc.text("OHC — Occupational Health Card", margin, y);
-  doc.autoTable({
-    startY: y + 8,
-    margin: { left: margin, right: margin },
-    head: [["Name","ID","Department","Status","Issue Date","Expiry Date"]],
-    body: state.employees.map(e => { const s = getCertSummary(e,"ohc"); return [e.name, e.employeeId, e.department, s.status, fmtDate(s.issueDate), fmtDate(s.expiryDate)]; }),
-    styles: { fontSize: 8, cellPadding: 5 },
-    headStyles: { fillColor: [109,40,217], textColor: 255, fontStyle: "bold" },
-    theme: "grid",
-  });
-
-  // ── Footer on every page ──
-  const pageCount = doc.internal.getNumberOfPages();
-  for (let p = 1; p <= pageCount; p++) {
-    doc.setPage(p);
-    doc.setFontSize(8); doc.setTextColor(156,163,175);
-    doc.text("UAE Kitchen Compliance Portal · Confidential · For internal use", pageW / 2, doc.internal.pageSize.getHeight() - 20, { align: "center" });
-  }
-
-  doc.save(`uae-kitchen-compliance-${today()}.pdf`);
-  showToast("PDF report ready.");
+  persist(); render(); showToast("Sample data loaded.");
 }
 
 // ── Normalise helpers ─────────────────────────────────────────────────────────
 function normalizeEmployee(e) { return { ...e, certificates: { ...createEmptyCertificates(), ...(e.certificates||{}) } }; }
-function normalizeSettings(s) { return { reminderDays: Number(s.reminderDays||defaultSettings.reminderDays) }; }
+function normalizeSettings(s) { return { ...defaultSettings, ...s, reminderDays: Number(s.reminderDays||defaultSettings.reminderDays) }; }
 function createEmptyCertificates() { return { bfs:{}, ohc:{} }; }
 function formData(form) { return Object.fromEntries(new FormData(form).entries()); }
 
@@ -832,9 +782,6 @@ function fileLink(f) {
 function escHtml(v) {
   return String(v??"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;");
 }
-function escAttr(v) {
-  return escHtml(v).replaceAll("'", "&#039;");
-}
 async function readCertFile(file) {
   if (!file) return null;
   if (file.type !== "application/pdf" && !file.type.startsWith("image/")) { showToast("Upload a PDF or image."); throw new Error("bad type"); }
@@ -857,19 +804,15 @@ function parseCsv(text) {
   row.push(cell);rows.push(row);return rows;
 }
 function csvEsc(v) { const s=String(v??""); return /[,"\n\r]/.test(s)?`"${s.replaceAll('"','""')}"`  :s; }
+function isValidDate(v) { return /^\d{4}-\d{2}-\d{2}$/.test(v)&&!isNaN(new Date(`${v}T00:00:00`)); }
 
-// Accepts: YYYY-MM-DD, DD/MM/YYYY, MM/DD/YYYY, DD/MM/YY, DD-MM-YY,
-//          named months with 2 or 4-digit year (16-Jun-26), Excel serials
-// Returns "YYYY-MM-DD" or null
 function parseDate(v) {
   if (!v || !String(v).trim()) return null;
   const s = String(v).trim();
-
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
     const d = new Date(`${s}T00:00:00`);
     return isNaN(d) ? null : s;
   }
-
   if (/^\d{4,5}$/.test(s)) {
     const serial = parseInt(s, 10);
     if (serial > 1000 && serial < 100000) {
@@ -878,9 +821,7 @@ function parseDate(v) {
     }
     return null;
   }
-
   const expandYear = yy => { const n = parseInt(yy, 10); return String(n <= 29 ? 2000 + n : 1900 + n); };
-
   const namedDMY = s.match(/^(\d{1,2})[\s\-\/]([A-Za-z]{3,9})[\s\-\/,]*(\d{2,4})$/);
   if (namedDMY) {
     const [, dd, mon, rawY] = namedDMY;
@@ -895,7 +836,6 @@ function parseDate(v) {
     const d = new Date(`${dd} ${mon} ${yyyy}`);
     if (!isNaN(d)) return d.toISOString().slice(0, 10);
   }
-
   const dmy = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
   if (dmy) {
     const [, dd, mm, rawY] = dmy;
@@ -908,7 +848,6 @@ function parseDate(v) {
     if (!isNaN(d2)) return `${yyyy}-${dd.padStart(2,'0')}-${mm.padStart(2,'0')}`;
     return null;
   }
-
   const ymd = s.match(/^(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})$/);
   if (ymd) {
     const [, yyyy, mm, dd] = ymd;
@@ -916,10 +855,8 @@ function parseDate(v) {
     const d = new Date(`${iso}T00:00:00`);
     return isNaN(d) ? null : iso;
   }
-
   const d = new Date(s);
   if (!isNaN(d)) return d.toISOString().slice(0, 10);
-
   return null;
 }
 function today() { return new Date().toISOString().slice(0,10); }
@@ -929,6 +866,5 @@ function showToast(msg) {
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
-CERT_TYPES.forEach(initSection);
 render();
 initGoogleSignIn();
