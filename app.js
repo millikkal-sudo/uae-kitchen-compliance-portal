@@ -747,39 +747,59 @@ function parseCsv(text) {
 function csvEsc(v) { const s=String(v??""); return /[,"\n\r]/.test(s)?`"${s.replaceAll('"','""')}"`  :s; }
 function isValidDate(v) { return /^\d{4}-\d{2}-\d{2}$/.test(v)&&!isNaN(new Date(`${v}T00:00:00`)); }
 
-// Accepts: YYYY-MM-DD, DD/MM/YYYY, MM/DD/YYYY, DD-MM-YYYY, D/M/YYYY, Excel serial numbers
+// Accepts: YYYY-MM-DD, DD/MM/YYYY, MM/DD/YYYY, DD/MM/YY, DD-MM-YY,
+//          named months with 2 or 4-digit year (16-Jun-26), Excel serials
 // Returns "YYYY-MM-DD" or null
 function parseDate(v) {
   if (!v || !String(v).trim()) return null;
   const s = String(v).trim();
 
-  // Already ISO
+  // Already ISO YYYY-MM-DD
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
     const d = new Date(`${s}T00:00:00`);
     return isNaN(d) ? null : s;
   }
 
-  // Excel serial number (e.g. 46772)
+  // Excel serial number (e.g. 46189)
   if (/^\d{4,5}$/.test(s)) {
     const serial = parseInt(s, 10);
     if (serial > 1000 && serial < 100000) {
-      // Excel epoch is Jan 0 1900; JS Date from serial
       const d = new Date(Date.UTC(1899, 11, 30) + serial * 86400000);
       if (!isNaN(d)) return d.toISOString().slice(0, 10);
     }
     return null;
   }
 
-  // DD/MM/YYYY or D/M/YYYY or DD-MM-YYYY
-  const dmy = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})$/);
+  // Expand 2-digit year: 00-29 → 2000s, 30-99 → 1900s
+  const expandYear = yy => { const n = parseInt(yy, 10); return String(n <= 29 ? 2000 + n : 1900 + n); };
+
+  // Named month with 2 OR 4 digit year: "16-Jun-26", "16-Jun-2026", "01-May-26", "May 1, 2026"
+  const namedDMY = s.match(/^(\d{1,2})[\s\-\/]([A-Za-z]{3,9})[\s\-\/,]*(\d{2,4})$/);
+  if (namedDMY) {
+    const [, dd, mon, rawY] = namedDMY;
+    const yyyy = rawY.length === 2 ? expandYear(rawY) : rawY;
+    const d = new Date(`${dd} ${mon} ${yyyy}`);
+    if (!isNaN(d)) return d.toISOString().slice(0, 10);
+  }
+  const namedMDY = s.match(/^([A-Za-z]{3,9})[\s\-\/,]+(\d{1,2})[\s\-\/,]*(\d{2,4})$/);
+  if (namedMDY) {
+    const [, mon, dd, rawY] = namedMDY;
+    const yyyy = rawY.length === 2 ? expandYear(rawY) : rawY;
+    const d = new Date(`${dd} ${mon} ${yyyy}`);
+    if (!isNaN(d)) return d.toISOString().slice(0, 10);
+  }
+
+  // DD/MM/YYYY or DD/MM/YY or D/M/YY (UAE/UK convention first)
+  const dmy = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
   if (dmy) {
-    const [, dd, mm, yyyy] = dmy;
-    // Try DD/MM/YYYY first (UAE/UK convention)
+    const [, dd, mm, rawY] = dmy;
+    const yyyy = rawY.length === 2 ? expandYear(rawY) : rawY;
+    // Try DD/MM first
     const d1 = new Date(`${yyyy}-${mm.padStart(2,'0')}-${dd.padStart(2,'0')}T00:00:00`);
     if (!isNaN(d1) && d1.getMonth() + 1 === parseInt(mm)) {
       return `${yyyy}-${mm.padStart(2,'0')}-${dd.padStart(2,'0')}`;
     }
-    // Fallback: MM/DD/YYYY
+    // Fallback MM/DD
     const d2 = new Date(`${yyyy}-${dd.padStart(2,'0')}-${mm.padStart(2,'0')}T00:00:00`);
     if (!isNaN(d2)) return `${yyyy}-${dd.padStart(2,'0')}-${mm.padStart(2,'0')}`;
     return null;
@@ -794,14 +814,9 @@ function parseDate(v) {
     return isNaN(d) ? null : iso;
   }
 
-  // Named month: "1 May 2026", "May 1, 2026", "01-May-2026"
-  const named = s.match(/^(\d{1,2})[\s\-\/]([A-Za-z]{3,9})[\s\-\/,]*(\d{4})$/) ||
-                s.match(/^([A-Za-z]{3,9})[\s\-\/,]+(\d{1,2})[\s\-\/,]*(\d{4})$/);
-  if (named) {
-    const d = new Date(s);
-    if (!isNaN(d)) return d.toISOString().slice(0, 10);
-    return null;
-  }
+  // Last resort: browser native parse
+  const d = new Date(s);
+  if (!isNaN(d)) return d.toISOString().slice(0, 10);
 
   return null;
 }
