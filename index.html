@@ -211,6 +211,14 @@
       color: #5fc4a0;
     }
 
+    .tile-error {
+      font-size: 10.5px;
+      color: #ff8080;
+      margin-top: 6px;
+      line-height: 1.3;
+      word-break: break-word;
+    }
+
     .btn-logout {
       width: 100%;
       padding: 12px;
@@ -285,10 +293,12 @@
       <div class="tile">
         <div class="tile-label">BFS Certificates</div>
         <div class="tile-value" id="bfsCount">—</div>
+        <div class="tile-error" id="bfsError"></div>
       </div>
       <div class="tile">
         <div class="tile-label">OHC Certificates</div>
         <div class="tile-value" id="ohcCount">—</div>
+        <div class="tile-error" id="ohcError"></div>
       </div>
     </div>
 
@@ -355,17 +365,35 @@
     clearAlerts();
   }
 
+  /* ── Load certificate counts (with visible error reporting) ── */
   async function loadCounts(user) {
-    /* Try fetching counts — gracefully handles missing tables */
-    try {
-      const [bfsRes, ohcRes] = await Promise.all([
-        sb.from('bfs_certificates').select('id', { count: 'exact', head: true }),
-        sb.from('ohc_certificates').select('id', { count: 'exact', head: true }),
-      ]);
-      document.getElementById('bfsCount').textContent = bfsRes.count ?? '—';
-      document.getElementById('ohcCount').textContent = ohcRes.count ?? '—';
-    } catch (_) {
-      /* Tables may not exist yet — silently ignore */
+    const bfsCountEl = document.getElementById('bfsCount');
+    const ohcCountEl = document.getElementById('ohcCount');
+    const bfsErrorEl = document.getElementById('bfsError');
+    const ohcErrorEl = document.getElementById('ohcError');
+
+    bfsErrorEl.textContent = '';
+    ohcErrorEl.textContent = '';
+
+    const bfsRes = await sb.from('bfs_certificates').select('id', { count: 'exact', head: true });
+    const ohcRes = await sb.from('ohc_certificates').select('id', { count: 'exact', head: true });
+
+    // Log full results to console for debugging
+    console.log('BFS result:', bfsRes);
+    console.log('OHC result:', ohcRes);
+
+    if (bfsRes.error) {
+      bfsCountEl.textContent = '—';
+      bfsErrorEl.textContent = bfsRes.error.message;
+    } else {
+      bfsCountEl.textContent = bfsRes.count ?? '—';
+    }
+
+    if (ohcRes.error) {
+      ohcCountEl.textContent = '—';
+      ohcErrorEl.textContent = ohcRes.error.message;
+    } else {
+      ohcCountEl.textContent = ohcRes.count ?? '—';
     }
   }
 
