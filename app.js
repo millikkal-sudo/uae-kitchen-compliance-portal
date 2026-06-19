@@ -50,19 +50,32 @@ function handleGoogleCredential(response) {
   }
   document.getElementById("loginError").classList.add("hidden");
   document.getElementById("loginLoading").classList.remove("hidden");
+
   const tokenClient = google.accounts.oauth2.initTokenClient({
-    client_id: CLIENT_ID, scope: SCOPES,
+    client_id: CLIENT_ID,
+    scope: SCOPES,
     callback: async (tok) => {
       document.getElementById("loginLoading").classList.add("hidden");
-      if (tok.error) { showToast("Drive access denied."); return; }
+      if (tok.error || !tok.access_token) {
+        showToast("Google Drive access denied — please allow Drive access when prompted.");
+        return;
+      }
       session = { email: payload.email, name: payload.name || payload.email, accessToken: tok.access_token };
       setSyncState("syncing");
-      await loadFromDrive();
+      // Timeout: if Drive takes >8s, proceed without it
+      const driveTimeout = new Promise(res => setTimeout(() => { setSyncState("error"); res(); }, 8000));
+      await Promise.race([loadFromDrive(), driveTimeout]);
       render();
       showToast(`Welcome, ${session.name.split(" ")[0]}!`);
     },
+    error_callback: (err) => {
+      document.getElementById("loginLoading").classList.add("hidden");
+      showToast("Drive permission denied. Try again and allow access.");
+      console.error("Token error:", err);
+    },
   });
-  tokenClient.requestAccessToken({ prompt: "" });
+  // Always show consent prompt so Drive scope is explicitly granted
+  tokenClient.requestAccessToken({ prompt: "consent" });
 }
 
 function parseJwt(token) {
@@ -80,20 +93,39 @@ async function driveReq(method, url, body, ct) {
 
 async function loadFromDrive() {
   try {
-    const list = await (await driveReq("GET",
+    // Step 1: list files
+    const listRes = await driveReq("GET",
       `https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name%3D%27${DRIVE_FILE_NAME}%27&fields=files(id)`
-    )).json();
+    );
+    if (!listRes.ok) {
+      const err = await listRes.json().catch(()=>({}));
+      console.error("Drive list error:", listRes.status, err);
+      setSyncState("error");
+      showToast(`Drive error ${listRes.status} — working offline.`);
+      return;
+    }
+    const list = await listRes.json();
+
     if (list.files?.length) {
+      // Step 2a: read existing file
       driveFileId = list.files[0].id;
-      const raw = await (await driveReq("GET",
+      const fileRes = await driveReq("GET",
         `https://www.googleapis.com/drive/v3/files/${driveFileId}?alt=media`
-      )).json();
-      state = { employees: (raw.employees||[]).map(normalizeEmployee), settings: normalizeSettings(raw.settings||{}) };
+      );
+      if (fileRes.ok) {
+        const raw = await fileRes.json().catch(()=>({}));
+        state = { employees: (raw.employees||[]).map(normalizeEmployee), settings: normalizeSettings(raw.settings||{}) };
+      }
     } else {
+      // Step 2b: create new file
       driveFileId = await createDriveFile();
     }
     setSyncState("idle");
-  } catch (e) { console.error(e); setSyncState("error"); showToast("Could not load from Drive."); }
+  } catch (e) {
+    console.error("loadFromDrive exception:", e);
+    setSyncState("error");
+    showToast("Could not connect to Drive — working offline.");
+  }
 }
 
 async function createDriveFile() {
