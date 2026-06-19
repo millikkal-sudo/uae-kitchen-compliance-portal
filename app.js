@@ -708,7 +708,7 @@ function badge(status) {
 }
 function fmtDate(v) {
   if (!v) return "—";
-  return new Intl.DateTimeFormat(undefined,{year:"numeric",month:"short",day:"numeric"}).format(new Date(`${v}T00:00:00`));
+  return new Intl.DateTimeFormat("en-US",{year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date(`${v}T00:00:00`));
 }
 function fmtDays(d) {
   if (!isFinite(d)) return "not recorded";
