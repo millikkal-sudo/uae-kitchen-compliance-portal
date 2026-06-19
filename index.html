@@ -75,8 +75,7 @@
             <h1>UAE Kitchen – Compliance Portal</h1>
           </div>
           <div class="actions">
-            <button id="seedDemo"      class="secondary-btn" type="button">Load Sample Data</button>
-            <button id="exportExcelTop" class="primary-btn"  type="button">Export Excel</button>
+            <button id="exportPdfTop" class="primary-btn"  type="button">Export PDF</button>
           </div>
         </header>
 
@@ -90,11 +89,32 @@
             <div id="overallStatus" class="status-pill">Compliant</div>
           </div>
 
-          <div class="metric-grid">
+          <div class="metric-grid metric-grid-top">
             <article class="metric"><span>Employees</span><strong id="employeeMetric">0</strong></article>
-            <article class="metric"><span>Valid</span><strong id="validMetric">0</strong></article>
-            <article class="metric"><span>Expiring in 90 Days</span><strong id="ninetyMetric">0</strong></article>
-            <article class="metric urgent"><span>Expired / 30 Days</span><strong id="urgentMetric">0</strong></article>
+            <article class="metric urgent"><span>Action Needed (Expired or ≤30 Days)</span><strong id="urgentMetric">0</strong></article>
+          </div>
+
+          <div class="cert-overview-grid">
+            <section class="panel cert-overview-panel">
+              <div class="panel-heading"><h3><span class="cert-type-badge bfs-badge">BFS</span> Basic Food Safety</h3></div>
+              <div class="cert-stat-grid">
+                <div class="cert-stat good"><span>Valid</span><strong id="bfsValidMetric">0</strong></div>
+                <div class="cert-stat watch"><span>Expiring 90d</span><strong id="bfsNinetyMetric">0</strong></div>
+                <div class="cert-stat warn"><span>Expiring 30d</span><strong id="bfsThirtyMetric">0</strong></div>
+                <div class="cert-stat bad"><span>Expired</span><strong id="bfsExpiredMetric">0</strong></div>
+                <div class="cert-stat neutral"><span>Missing</span><strong id="bfsMissingMetric">0</strong></div>
+              </div>
+            </section>
+            <section class="panel cert-overview-panel">
+              <div class="panel-heading"><h3><span class="cert-type-badge ohc-badge">OHC</span> Occupational Health Card</h3></div>
+              <div class="cert-stat-grid">
+                <div class="cert-stat good"><span>Valid</span><strong id="ohcValidMetric">0</strong></div>
+                <div class="cert-stat watch"><span>Expiring 90d</span><strong id="ohcNinetyMetric">0</strong></div>
+                <div class="cert-stat warn"><span>Expiring 30d</span><strong id="ohcThirtyMetric">0</strong></div>
+                <div class="cert-stat bad"><span>Expired</span><strong id="ohcExpiredMetric">0</strong></div>
+                <div class="cert-stat neutral"><span>Missing</span><strong id="ohcMissingMetric">0</strong></div>
+              </div>
+            </section>
           </div>
 
           <div class="content-grid">
@@ -384,9 +404,9 @@
               <div class="panel-heading"><h3>Export</h3></div>
               <div class="export-actions">
                 <div>
-                  <strong>Excel Register</strong>
-                  <p>Full staff list with BFS &amp; OHC statuses, dates, and file names.</p>
-                  <button id="exportExcel" class="primary-btn" type="button">Download Excel</button>
+                  <strong>PDF Report</strong>
+                  <p>Full compliance report with BFS &amp; OHC summaries, statuses, and dates.</p>
+                  <button id="exportPdf" class="primary-btn" type="button">Download PDF</button>
                 </div>
               </div>
             </section>
@@ -405,6 +425,8 @@
     </div>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
     <script src="app.js"></script>
   </body>
 </html>
