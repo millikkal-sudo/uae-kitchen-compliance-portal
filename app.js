@@ -618,14 +618,19 @@ function importFromCsv(text) {
   const rows = parseCsv(text).filter(r => r.some(c => c.trim()));
   if (rows.length < 2) return { added:0, updated:0, skipped:0 };
   const hdrs = rows[0].map(h => h.toLowerCase().replace(/[^a-z0-9]/g,""));
+  // Pad every data row to header length so trailing empty columns aren't undefined
+  rows.slice(1).forEach(r => { while (r.length < hdrs.length) r.push(""); });
   let added=0, updated=0, skipped=0;
   rows.slice(1).forEach(row => {
     const rec = hdrs.reduce((o,h,i) => { o[h]=(row[i]||"").trim(); return o; }, {});
     if (!rec.employeeid || !rec.name || !rec.department) { skipped++; return; }
     const existing = state.employees.find(e => e.employeeId.toLowerCase() === rec.employeeid.toLowerCase());
     const certs = existing?.certificates || createEmptyCertificates();
-    const bfsDate = parseDate(rec.bfsissuedate);
-    const ohcDate = parseDate(rec.ohcissuedate);
+    // Try multiple possible normalized header variations for BFS and OHC dates
+    const bfsVal = rec.bfsissuedate || rec.bfsdate || rec.bfs || findRecKey(rec, "bfs");
+    const ohcVal = rec.ohcissuedate || rec.ohcdate || rec.ohc || findRecKey(rec, "ohc");
+    const bfsDate = parseDate(bfsVal);
+    const ohcDate = parseDate(ohcVal);
     if (bfsDate) certs.bfs = { issueDate: bfsDate, expiryDate: calcExpiry(bfsDate, 2), file: certs.bfs?.file||null, updatedAt: new Date().toISOString() };
     if (ohcDate) certs.ohc = { issueDate: ohcDate, expiryDate: calcExpiry(ohcDate, 1), file: certs.ohc?.file||null, updatedAt: new Date().toISOString() };
     const emp = { id: existing?.id||crypto.randomUUID(), name: rec.name, employeeId: rec.employeeid, department: rec.department, certificates: certs, createdAt: existing?.createdAt||new Date().toISOString(), updatedAt: new Date().toISOString() };
@@ -633,6 +638,12 @@ function importFromCsv(text) {
     else { state.employees.unshift(emp); added++; }
   });
   return { added, updated, skipped };
+}
+
+// Find a key in rec that contains the given prefix (for flexible CSV header matching)
+function findRecKey(rec, prefix) {
+  const key = Object.keys(rec).find(k => k.startsWith(prefix) && (k.includes("issue") || k.includes("date")));
+  return key ? rec[key] : "";
 }
 
 function downloadTemplate() {
