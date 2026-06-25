@@ -108,19 +108,48 @@ async function loadFromSupabase() {
 // ── Supabase: write helpers ───────────────────────────────────────────────────
 
 // Returns the DB id of the upserted employee
+// Uses employee_id (the text code like CK-1024) as conflict key so
+// employees added before Supabase existed get correctly matched/updated
 async function upsertEmployee(emp) {
   const { data, error } = await sb.from("employees").upsert(
     { id: emp.id, name: emp.name, employee_id: emp.employeeId, department: emp.department, updated_at: new Date().toISOString() },
-    { onConflict: "id" }
+    { onConflict: "employee_id" }   // match on the unique text code, not UUID
   ).select("id").single();
   if (error) throw error;
+  // Sync the real DB id back into state so cert saves use the right FK
+  if (data.id !== emp.id) {
+    const inState = state.employees.find(x => x.employeeId === emp.employeeId);
+    if (inState) inState.id = data.id;
+  }
   return data.id;
 }
 
 // Returns the cert row id so callers can update _certIds
-async function upsertCertificate(empDbId, type, cert, existingCertId) {
+// empStateId = the id stored in state (may be a local UUID not yet in DB)
+// We resolve the real DB employee id via employee_id code before inserting
+async function upsertCertificate(empStateId, type, cert, existingCertId) {
+  // Look up the real DB row id using the unique employee_id code
+  const emp = state.employees.find(x => x.id === empStateId);
+  if (!emp) throw new Error(`Employee not found in state: ${empStateId}`);
+
+  // Get the real Supabase row id by employee_id code (the unique text id like CK-1024)
+  const { data: empRow, error: empErr } = await sb
+    .from("employees")
+    .select("id")
+    .eq("employee_id", emp.employeeId)
+    .single();
+  if (empErr || !empRow) throw new Error(`Employee "${emp.employeeId}" not found in database. Please save the employee first.`);
+
+  const realEmpId = empRow.id;
+
+  // Also update the in-state id to match DB so future calls are instant
+  if (emp.id !== realEmpId) {
+    emp.id = realEmpId;
+    if (!emp._certIds) emp._certIds = {};
+  }
+
   const payload = {
-    employee_id: empDbId, type,
+    employee_id: realEmpId, type,
     issue_date:  cert.issueDate  || null,
     expiry_date: cert.expiryDate || null,
     file_name:   cert.file?.name     || null,
@@ -132,7 +161,7 @@ async function upsertCertificate(empDbId, type, cert, existingCertId) {
     .upsert(payload, { onConflict: "employee_id,type" })
     .select("id").single();
   if (error) throw error;
-  return data.id; // FIX BUG1/2/3: return id so caller can update _certIds
+  return data.id;
 }
 
 // Upload file to Supabase Storage — returns { filePath, publicUrl } or throws
@@ -330,10 +359,20 @@ function initSection(type) {
   bulkUploadForm.addEventListener("submit", async e => {
     e.preventDefault(); if (!isEditor) return;
     const file = e.currentTarget.elements.csvFile.files[0]; if (!file) return;
-    setSyncState("syncing");
-    const result = await importFromCsv(await file.text());
-    e.currentTarget.reset(); renderAll();
-    showToast(`CSV done: ${result.added} added, ${result.updated} updated, ${result.skipped} skipped.`);
+    const btn = e.currentTarget.querySelector("button[type=submit]");
+    btn.disabled = true; btn.textContent = "Importing…";
+    showProgressToast("Reading file…", 0);
+    try {
+      const result = await importFromCsv(await file.text());
+      e.currentTarget.reset(); renderAll();
+      hideProgressToast();
+      showToast(`✅ Done: ${result.added} added, ${result.updated} updated, ${result.skipped} skipped.`);
+    } catch(err) {
+      hideProgressToast();
+      showToast(`❌ Import failed: ${err.message}`);
+    } finally {
+      btn.disabled = false; btn.textContent = "Upload & Import";
+    }
   });
 
   // Bulk cert file upload
@@ -650,39 +689,68 @@ function getAlertItems(){return getCertSummaries().filter(s=>s.status!=="Missing
 
 // ── CSV import ─────────────────────────────────────────────────────────────────
 async function importFromCsv(text) {
-  const rows = parseCsv(text).filter(r=>r.some(c=>c.trim()));
-  if (rows.length<2) return {added:0,updated:0,skipped:0};
-  // FIX BUG6: only use known column names
-  const hdrs = rows[0].map(h=>h.toLowerCase().replace(/[^a-z0-9]/g,""));
+  const allRows = parseCsv(text).filter(r => r.some(c => c.trim()));
+  if (allRows.length < 2) return { added: 0, updated: 0, skipped: 0 };
+
+  const hdrs = allRows[0].map(h => h.toLowerCase().replace(/[^a-z0-9]/g, ""));
   const idx  = k => hdrs.indexOf(k);
-  let added=0,updated=0,skipped=0;
-  for (const raw of rows.slice(1)) {
-    const row = [...raw]; while(row.length<hdrs.length) row.push("");
-    const get = k => (row[idx(k)]||"").trim();
-    const empId=get("employeeid"), name=get("name"), dept=get("department");
-    if (!empId||!name||!dept) { skipped++; continue; }
-    const existing = state.employees.find(e=>e.employeeId.toLowerCase()===empId.toLowerCase());
-    const certs    = existing ? JSON.parse(JSON.stringify(existing.certificates)) : createEmptyCertificates();
-    // FIX BUG6: only read exact known column names
-    const bfsDate  = parseDate(get("bfsissuedate"));
-    const ohcDate  = parseDate(get("ohcissuedate"));
-    if (bfsDate) certs.bfs = {issueDate:bfsDate, expiryDate:calcExpiry(bfsDate,2), file:certs.bfs?.file||null};
-    if (ohcDate) certs.ohc = {issueDate:ohcDate, expiryDate:calcExpiry(ohcDate,1), file:certs.ohc?.file||null};
-    const emp = {id:existing?.id||crypto.randomUUID(), name, employeeId:empId, department:dept,
-                 certificates:certs, _certIds:existing?._certIds||{},
-                 createdAt:existing?.createdAt||new Date().toISOString(), updatedAt:new Date().toISOString()};
-    if (existing) { state.employees=state.employees.map(x=>x.id===existing.id?emp:x); updated++; }
-    else { state.employees.unshift(emp); added++; }
-    try {
-      const dbId   = await upsertEmployee(emp);
-      // FIX BUG3: write _certIds back to state
-      const inState = state.employees.find(x=>x.id===emp.id);
-      if (bfsDate) { const cid=await upsertCertificate(dbId,"bfs",certs.bfs,emp._certIds?.bfs); if(inState){if(!inState._certIds)inState._certIds={};inState._certIds.bfs=cid;} }
-      if (ohcDate) { const cid=await upsertCertificate(dbId,"ohc",certs.ohc,emp._certIds?.ohc); if(inState){if(!inState._certIds)inState._certIds={};inState._certIds.ohc=cid;} }
-    } catch(err) { console.error("CSV row upsert error:",err.message); }
+  const dataRows = allRows.slice(1);
+
+  // ── Step 1: Parse CSV into employee + cert records ──────────────────────────
+  showProgressToast(`Parsing ${dataRows.length} rows…`, 5);
+  const toInsert = [], toUpdate = [], certRows = [];
+  let skipped = 0;
+
+  for (const raw of dataRows) {
+    const row = [...raw]; while (row.length < hdrs.length) row.push("");
+    const get = k => { const i = idx(k); return i >= 0 ? (row[i] || "").trim() : ""; };
+    const empId = get("employeeid"), name = get("name"), dept = get("department");
+    if (!empId || !name || !dept) { skipped++; continue; }
+
+    const bfsDate = parseDate(get("bfsissuedate"));
+    const ohcDate = parseDate(get("ohcissuedate"));
+    const existing = state.employees.find(e => e.employeeId.toLowerCase() === empId.toLowerCase());
+    const id = existing?.id || crypto.randomUUID();
+
+    const empRow = { id, name, employee_id: empId, department: dept, updated_at: new Date().toISOString() };
+    if (existing) toUpdate.push(empRow);
+    else          toInsert.push({ ...empRow, created_at: new Date().toISOString() });
+
+    if (bfsDate) certRows.push({ employee_id: id, type: "bfs", issue_date: bfsDate, expiry_date: calcExpiry(bfsDate, 2), updated_at: new Date().toISOString() });
+    if (ohcDate) certRows.push({ employee_id: id, type: "ohc", issue_date: ohcDate, expiry_date: calcExpiry(ohcDate, 1), updated_at: new Date().toISOString() });
   }
+
+  const total = toInsert.length + toUpdate.length;
+  if (total === 0) return { added: 0, updated: 0, skipped };
+
+  // ── Step 2: Batch upsert employees (single DB call) ──────────────────────────
+  showProgressToast(`Writing ${total} employees to database…`, 30);
+  const allEmpRows = [...toInsert, ...toUpdate];
+  const BATCH = 200; // Supabase handles up to ~500 rows per upsert safely
+  for (let i = 0; i < allEmpRows.length; i += BATCH) {
+    const chunk = allEmpRows.slice(i, i + BATCH);
+    const pct = 30 + Math.round((i / allEmpRows.length) * 40);
+    showProgressToast(`Writing employees ${i + 1}–${Math.min(i + BATCH, allEmpRows.length)} of ${allEmpRows.length}…`, pct);
+    const { error } = await sb.from("employees").upsert(chunk, { onConflict: "id" });
+    if (error) throw new Error(`Employee upsert failed: ${error.message}`);
+  }
+
+  // ── Step 3: Batch upsert certificates (single DB call) ───────────────────────
+  if (certRows.length > 0) {
+    showProgressToast(`Writing ${certRows.length} certificate records…`, 75);
+    for (let i = 0; i < certRows.length; i += BATCH) {
+      const chunk = certRows.slice(i, i + BATCH);
+      const { error } = await sb.from("certificates").upsert(chunk, { onConflict: "employee_id,type" });
+      if (error) throw new Error(`Certificate upsert failed: ${error.message}`);
+    }
+  }
+
+  // ── Step 4: Reload state from DB (source of truth) ───────────────────────────
+  showProgressToast("Reloading data…", 90);
+  await loadFromSupabase();
   setSyncState("idle");
-  return {added,updated,skipped};
+
+  return { added: toInsert.length, updated: toUpdate.length, skipped };
 }
 function downloadTemplate(type) {
   const cols = type==="bfs" ? ["employeeId","name","department","bfsIssueDate"] : ["employeeId","name","department","ohcIssueDate"];
@@ -733,7 +801,37 @@ function parseCsv(text){const rows=[];let row=[],cell="",inQ=false;for(let i=0;i
 function csvEsc(v){const s=String(v??"");return/[,"\n\r]/.test(s)?`"${s.replaceAll('"','""')}"`  :s;}
 function parseDate(v){if(!v||!String(v).trim())return null;const s=String(v).trim();if(/^\d{4}-\d{2}-\d{2}$/.test(s)){const d=new Date(`${s}T00:00:00`);return isNaN(d)?null:s;}const ey=yy=>{const n=parseInt(yy,10);return String(n<=29?2000+n:1900+n);};const nm=s.match(/^(\d{1,2})[\s\-\/]([A-Za-z]{3,9})[\s\-\/,]*(\d{2,4})$/);if(nm){const[,dd,mon,ry]=nm;const yyyy=ry.length===2?ey(ry):ry;const d=new Date(`${dd} ${mon} ${yyyy}`);if(!isNaN(d))return d.toISOString().slice(0,10);}const dmy=s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);if(dmy){const[,dd,mm,ry]=dmy;const yyyy=ry.length===2?ey(ry):ry;const iso=`${yyyy}-${mm.padStart(2,"0")}-${dd.padStart(2,"0")}`;const d=new Date(`${iso}T00:00:00`);if(!isNaN(d))return iso;}const d=new Date(s);if(!isNaN(d))return d.toISOString().slice(0,10);return null;}
 function today(){return new Date().toISOString().slice(0,10);}
-function showToast(msg){toast.textContent=msg;toast.classList.add("visible");clearTimeout(showToast._t);showToast._t=setTimeout(()=>toast.classList.remove("visible"),3000);}
+function showToast(msg){
+  // hide progress toast first
+  const pt = document.getElementById("progressToast");
+  if (pt) pt.classList.remove("visible");
+  toast.textContent = msg;
+  toast.classList.add("visible");
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => toast.classList.remove("visible"), 4000);
+}
+
+function showProgressToast(msg, pct) {
+  let pt = document.getElementById("progressToast");
+  if (!pt) {
+    pt = document.createElement("div");
+    pt.id = "progressToast";
+    pt.className = "progress-toast";
+    pt.innerHTML = `<div class="progress-toast-msg"></div><div class="progress-bar-wrap"><div class="progress-bar-fill"></div></div><div class="progress-toast-pct"></div>`;
+    document.body.appendChild(pt);
+  }
+  pt.querySelector(".progress-toast-msg").textContent  = msg;
+  pt.querySelector(".progress-bar-fill").style.width   = `${pct}%`;
+  pt.querySelector(".progress-toast-pct").textContent  = `${pct}%`;
+  pt.classList.add("visible");
+  // hide normal toast while progress is showing
+  toast.classList.remove("visible");
+}
+
+function hideProgressToast() {
+  const pt = document.getElementById("progressToast");
+  if (pt) pt.classList.remove("visible");
+}
 
 // ── Boot — FIX BUG5: single entry point, no race ──────────────────────────────
 CERT_TYPES.forEach(initSection);
