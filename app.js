@@ -20,7 +20,6 @@ const defaultSettings = { reminderDays: 30, managerEmail: "" };
 let state     = { employees: [], settings: { ...defaultSettings } };
 let session   = null;
 let isEditor  = false;
-let _bootDone = false; // FIX BUG5: guard against auth race
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const loginView         = document.getElementById("loginView");
@@ -833,16 +832,22 @@ function hideProgressToast() {
   if (pt) pt.classList.remove("visible");
 }
 
-// ── Boot — FIX BUG5: single entry point, no race ──────────────────────────────
+// ── Boot ──────────────────────────────────────────────────────────────────────
 CERT_TYPES.forEach(initSection);
-render(); // show login immediately
+render(); // show login screen immediately while we check session
 
-sb.auth.getSession().then(({ data: { session: s } }) => {
-  _bootDone = true;
-  if (s?.user) onSignIn(s.user); // auto-login if session exists
-});
-
-sb.auth.onAuthStateChange((_event, s) => {
-  if (!_bootDone) return; // ignore the initial fire before getSession resolves
-  if (!s) { session=null; isEditor=false; state={employees:[],settings:{...defaultSettings}}; render(); }
+// onAuthStateChange is the single source of truth for auth state.
+// It fires on every page load with the restored session (INITIAL_SESSION event),
+// on sign-in (SIGNED_IN), and on sign-out (SIGNED_OUT).
+sb.auth.onAuthStateChange(async (event, sbSession) => {
+  if (event === "SIGNED_IN" || event === "INITIAL_SESSION") {
+    if (sbSession?.user && sbSession.user.id !== session?.id) {
+      // New or restored session — load data and render
+      await onSignIn(sbSession.user);
+    }
+  } else if (event === "SIGNED_OUT" || event === "USER_DELETED") {
+    session = null; isEditor = false;
+    state = { employees: [], settings: { ...defaultSettings } };
+    render();
+  }
 });
