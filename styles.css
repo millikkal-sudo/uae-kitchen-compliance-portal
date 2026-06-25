@@ -372,3 +372,59 @@ tr:hover td { background: #fafbfc; }
   background: #6d28d9; font-size: 10px; letter-spacing: .04em;
   width: auto; padding: 0 8px; border-radius: 6px;
 }
+
+/* ── Email / Password login form ─────────────────────────────────── */
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+}
+.login-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255,255,255,.6);
+  letter-spacing: .03em;
+}
+.login-form input {
+  background: rgba(255,255,255,.08);
+  border: 1px solid rgba(255,255,255,.15);
+  border-radius: 9px;
+  color: #fff;
+  padding: 11px 14px;
+  font-size: 14px;
+  transition: border-color .15s, background .15s;
+}
+.login-form input::placeholder { color: rgba(255,255,255,.3); }
+.login-form input:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: rgba(255,255,255,.12);
+  box-shadow: 0 0 0 3px color-mix(in srgb,var(--accent) 25%,transparent);
+}
+.pw-wrap { position: relative; }
+.pw-wrap input { padding-right: 42px; width: 100%; }
+.pw-eye {
+  position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+  background: none; border: none; cursor: pointer;
+  font-size: 16px; color: rgba(255,255,255,.4); padding: 4px;
+  border-radius: 5px; line-height: 1;
+}
+.pw-eye:hover { color: rgba(255,255,255,.8); }
+.login-submit-btn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 9px;
+  padding: 12px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background .15s, transform .1s;
+  margin-top: 4px;
+}
+.login-submit-btn:hover:not(:disabled) { background: var(--accent-dark); }
+.login-submit-btn:disabled { opacity: .6; cursor: not-allowed; }
