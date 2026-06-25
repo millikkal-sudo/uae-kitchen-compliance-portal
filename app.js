@@ -4,7 +4,9 @@ const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-const EDITOR_EMAILS = ["m.illikkal@calo.app", "j.swamy@calo.app"];
+const EDITOR_EMAILS   = ["m.illikkal@calo.app", "j.swamy@calo.app"];
+const SUPABASE_BUCKET = "certificates"; // Storage bucket name
+const MAX_FILE_BYTES  = 5 * 1024 * 1024; // 5 MB hard cap
 
 const CERTIFICATES = {
   bfs: { label: "BFS", fullName: "Basic Food Safety",        validYears: 2 },
@@ -15,22 +17,22 @@ const SECTION_SUFFIX = { bfs: "Bfs", ohc: "Ohc" };
 const defaultSettings = { reminderDays: 30, managerEmail: "" };
 
 // ── State ─────────────────────────────────────────────────────────────────────
-let state    = { employees: [], settings: { ...defaultSettings } };
-let session  = null;   // supabase user object
-let isEditor = false;
-let saveTimer = null;
+let state     = { employees: [], settings: { ...defaultSettings } };
+let session   = null;
+let isEditor  = false;
+let _bootDone = false; // FIX BUG5: guard against auth race
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
-const loginView       = document.getElementById("loginView");
-const appShell        = document.getElementById("appShell");
-const toast           = document.getElementById("toast");
-const views           = document.querySelectorAll(".view");
-const tabs            = document.querySelectorAll(".nav-tab");
-const syncStatus      = document.getElementById("syncStatus");
-const syncLabel       = document.getElementById("syncLabel");
+const loginView         = document.getElementById("loginView");
+const appShell          = document.getElementById("appShell");
+const toast             = document.getElementById("toast");
+const views             = document.querySelectorAll(".view");
+const tabs              = document.querySelectorAll(".nav-tab");
+const syncStatus        = document.getElementById("syncStatus");
+const syncLabel         = document.getElementById("syncLabel");
 const alertSettingsForm = document.getElementById("alertSettingsForm");
 
-// ── Login form ────────────────────────────────────────────────────────────────
+// ── Login ─────────────────────────────────────────────────────────────────────
 document.getElementById("loginForm").addEventListener("submit", async e => {
   e.preventDefault();
   const email    = document.getElementById("loginEmail").value.trim().toLowerCase();
@@ -45,7 +47,6 @@ document.getElementById("loginForm").addEventListener("submit", async e => {
   await onSignIn(data.user);
 });
 
-// Password visibility toggle
 document.getElementById("togglePw").addEventListener("click", () => {
   const pw = document.getElementById("loginPassword");
   pw.type = pw.type === "password" ? "text" : "password";
@@ -57,118 +58,142 @@ async function onSignIn(user) {
   setSyncState("syncing");
   await loadFromSupabase();
   render();
-  showToast(`Welcome, ${(user.email.split("@")[0])}!`);
+  showToast(`Welcome, ${user.email.split("@")[0]}!`);
 }
 
 // ── Sign out ──────────────────────────────────────────────────────────────────
-async function signOut() {
+document.getElementById("signOutButton").addEventListener("click", async () => {
   await sb.auth.signOut();
   session = null; isEditor = false;
   state = { employees: [], settings: { ...defaultSettings } };
   render();
-}
-document.getElementById("signOutButton").addEventListener("click", signOut);
+});
 
-// ── Supabase data layer ───────────────────────────────────────────────────────
-
+// ── Supabase: load ────────────────────────────────────────────────────────────
 async function loadFromSupabase() {
   try {
-    // Load employees
-    const { data: emps, error: empErr } = await sb.from("employees").select("*").order("created_at", { ascending: false });
-    if (empErr) throw empErr;
+    const [{ data: emps, error: e1 }, { data: certs, error: e2 }, { data: cfg }] = await Promise.all([
+      sb.from("employees").select("*").order("created_at", { ascending: false }),
+      sb.from("certificates").select("id,employee_id,type,issue_date,expiry_date,file_name,file_path"),
+      sb.from("settings").select("*").eq("id", 1).single(),
+    ]);
+    if (e1) throw e1;
+    if (e2) throw e2;
 
-    // Load certificates
-    const { data: certs, error: certErr } = await sb.from("certificates").select("*");
-    if (certErr) throw certErr;
-
-    // Load settings
-    const { data: settings } = await sb.from("settings").select("*").eq("id", 1).single();
-
-    // Merge into state
     state.employees = (emps || []).map(emp => {
-      const empCerts = (certs || []).filter(c => c.employee_id === emp.id);
-      const bfs = empCerts.find(c => c.type === "bfs") || {};
-      const ohc = empCerts.find(c => c.type === "ohc") || {};
+      const ec  = (certs || []).filter(c => c.employee_id === emp.id);
+      const bfs = ec.find(c => c.type === "bfs") || {};
+      const ohc = ec.find(c => c.type === "ohc") || {};
       return {
-        id: emp.id,
-        name: emp.name,
-        employeeId: emp.employee_id,
-        department: emp.department,
-        createdAt: emp.created_at,
-        updatedAt: emp.updated_at,
+        id: emp.id, name: emp.name, employeeId: emp.employee_id,
+        department: emp.department, createdAt: emp.created_at, updatedAt: emp.updated_at,
         certificates: {
-          bfs: bfs.id ? { issueDate: bfs.issue_date||"", expiryDate: bfs.expiry_date||"", file: bfs.file_name ? { name: bfs.file_name, dataUrl: bfs.file_data, type: "application/pdf" } : null } : {},
-          ohc: ohc.id ? { issueDate: ohc.issue_date||"", expiryDate: ohc.expiry_date||"", file: ohc.file_name ? { name: ohc.file_name, dataUrl: ohc.file_data, type: "application/pdf" } : null } : {},
+          bfs: bfs.id ? { issueDate: bfs.issue_date||"", expiryDate: bfs.expiry_date||"",
+                          file: bfs.file_name ? { name: bfs.file_name, filePath: bfs.file_path, dataUrl: null } : null } : {},
+          ohc: ohc.id ? { issueDate: ohc.issue_date||"", expiryDate: ohc.expiry_date||"",
+                          file: ohc.file_name ? { name: ohc.file_name, filePath: ohc.file_path, dataUrl: null } : null } : {},
         },
-        _certIds: { bfs: bfs.id || null, ohc: ohc.id || null },
+        _certIds: { bfs: bfs.id||null, ohc: ohc.id||null },
       };
     });
-
-    state.settings = settings ? { reminderDays: settings.reminder_days, managerEmail: settings.manager_email || "" } : { ...defaultSettings };
+    state.settings = cfg ? { reminderDays: cfg.reminder_days, managerEmail: cfg.manager_email||"" } : { ...defaultSettings };
     setSyncState("idle");
-  } catch(e) {
-    console.error("loadFromSupabase:", e);
+  } catch(err) {
+    console.error("loadFromSupabase:", err);
     setSyncState("error");
     showToast("Could not load data — check connection.");
   }
 }
 
+// ── Supabase: write helpers ───────────────────────────────────────────────────
+
+// Returns the DB id of the upserted employee
 async function upsertEmployee(emp) {
-  const { data, error } = await sb.from("employees").upsert({
-    id: emp.id,
-    name: emp.name,
-    employee_id: emp.employeeId,
-    department: emp.department,
-    updated_at: new Date().toISOString(),
-  }, { onConflict: "id" }).select().single();
+  const { data, error } = await sb.from("employees").upsert(
+    { id: emp.id, name: emp.name, employee_id: emp.employeeId, department: emp.department, updated_at: new Date().toISOString() },
+    { onConflict: "id" }
+  ).select("id").single();
   if (error) throw error;
   return data.id;
 }
 
-async function upsertCertificate(empDbId, type, cert, existingId) {
+// Returns the cert row id so callers can update _certIds
+async function upsertCertificate(empDbId, type, cert, existingCertId) {
   const payload = {
-    employee_id: empDbId,
-    type,
+    employee_id: empDbId, type,
     issue_date:  cert.issueDate  || null,
     expiry_date: cert.expiryDate || null,
-    file_name:   cert.file?.name || null,
-    file_data:   cert.file?.dataUrl || null,
+    file_name:   cert.file?.name     || null,
+    file_path:   cert.file?.filePath || null,
     updated_at:  new Date().toISOString(),
   };
-  if (existingId) payload.id = existingId;
-  const { error } = await sb.from("certificates").upsert(payload, { onConflict: "employee_id,type" });
+  if (existingCertId) payload.id = existingCertId;
+  const { data, error } = await sb.from("certificates")
+    .upsert(payload, { onConflict: "employee_id,type" })
+    .select("id").single();
   if (error) throw error;
+  return data.id; // FIX BUG1/2/3: return id so caller can update _certIds
 }
 
-async function deleteEmployeeFromDb(empId) {
-  const { error } = await sb.from("employees").delete().eq("id", empId);
+// Upload file to Supabase Storage — returns { filePath, publicUrl } or throws
+async function uploadFileToStorage(empId, type, file) {
+  if (file.size > MAX_FILE_BYTES) throw new Error(`File too large (max 5 MB). "${file.name}" is ${(file.size/1024/1024).toFixed(1)} MB.`);
+  const ext      = file.name.split(".").pop();
+  const filePath = `${empId}/${type}/${Date.now()}.${ext}`;
+  const { error } = await sb.storage.from(SUPABASE_BUCKET).upload(filePath, file, { upsert: true, contentType: file.type });
   if (error) throw error;
+  const { data: { publicUrl } } = sb.storage.from(SUPABASE_BUCKET).getPublicUrl(filePath);
+  return { filePath, publicUrl };
 }
 
-async function deleteCertFromDb(empDbId, type) {
-  const { error } = await sb.from("certificates").delete().eq("employee_id", empDbId).eq("type", type);
-  if (error) throw error;
+// Delete old storage file if it exists
+async function deleteStorageFile(filePath) {
+  if (!filePath) return;
+  await sb.storage.from(SUPABASE_BUCKET).remove([filePath]).catch(console.warn);
 }
 
-async function saveSettingsToDb(settings) {
-  const { error } = await sb.from("settings").upsert({ id: 1, manager_email: settings.managerEmail, reminder_days: settings.reminderDays }, { onConflict: "id" });
-  if (error) throw error;
-}
+async function deleteEmployeeFromDb(id)     { const { error } = await sb.from("employees").delete().eq("id", id); if (error) throw error; }
+async function deleteCertFromDb(empId, type){ const { error } = await sb.from("certificates").delete().eq("employee_id", empId).eq("type", type); if (error) throw error; }
+async function saveSettingsToDb(s)          { const { error } = await sb.from("settings").upsert({ id:1, manager_email: s.managerEmail, reminder_days: s.reminderDays }, { onConflict:"id" }); if (error) throw error; }
 
-// ── Persist (debounced write to Supabase) ─────────────────────────────────────
-function persist(fn) {
-  if (!isEditor) return;
-  clearTimeout(saveTimer);
-  setSyncState("syncing");
-  saveTimer = setTimeout(async () => {
-    try { await fn(); setSyncState("idle"); }
-    catch(e) { console.error(e); setSyncState("error"); showToast("Save failed — check connection."); }
-  }, 400);
-}
-
+// ── Sync indicator ────────────────────────────────────────────────────────────
 function setSyncState(s) {
   syncStatus.className = "sync-status sync-" + s;
   syncLabel.textContent = s === "syncing" ? "Saving…" : s === "error" ? "Save failed" : "Saved";
+}
+
+// ── readCertFile — reads File object, uploads to Storage, returns cert file obj ─
+async function readCertFile(file, empId, type) {
+  if (!file) return null;
+  if (file.type !== "application/pdf" && !file.type.startsWith("image/")) { showToast("Upload a PDF or image."); throw new Error("bad type"); }
+  if (file.size > MAX_FILE_BYTES) { showToast(`File too large — max 5 MB.`); throw new Error("too large"); }
+
+  // Always get a local dataUrl for immediate preview
+  const dataUrl = await toDataUrl(file);
+
+  // If editor and online, also upload to Supabase Storage
+  let filePath = null;
+  if (isEditor && empId) {
+    try {
+      const result = await uploadFileToStorage(empId, type, file);
+      filePath = result.filePath;
+    } catch(err) {
+      console.warn("Storage upload failed, keeping local preview only:", err.message);
+      showToast(`Storage upload failed: ${err.message}`);
+    }
+  }
+  return { name: file.name, type: file.type, size: file.size, dataUrl, filePath, uploadedAt: new Date().toISOString() };
+}
+
+// ── fileLink — renders a download/view link ───────────────────────────────────
+function fileLink(f) {
+  if (!f) return '<span class="muted">—</span>';
+  // Prefer public Storage URL, fall back to dataUrl (local session only)
+  const href = f.filePath
+    ? sb.storage.from(SUPABASE_BUCKET).getPublicUrl(f.filePath).data.publicUrl
+    : f.dataUrl;
+  if (!href) return `<span class="muted" title="File recorded but not yet loaded">${escHtml(f.name)}</span>`;
+  return `<a class="table-link" href="${href}" target="_blank" rel="noopener">${escHtml(f.name)}</a>`;
 }
 
 // ── Tab navigation ─────────────────────────────────────────────────────────────
@@ -181,7 +206,7 @@ function showView(id) {
   views.forEach(v => v.classList.toggle("active-view", v.id === id));
 }
 
-// ── Cert upload modal ──────────────────────────────────────────────────────────
+// ── Cert upload modal ─────────────────────────────────────────────────────────
 const certUploadModal     = document.getElementById("certUploadModal");
 const certUploadModalForm = document.getElementById("certUploadModalForm");
 
@@ -210,16 +235,28 @@ certUploadModalForm.addEventListener("submit", async e => {
   const type = d.type;
   const file = e.currentTarget.elements.file.files[0];
   const prev = emp.certificates[type] || {};
-  const uploaded = file ? await readCertFile(file) : prev.file || null;
-  const certData = {
-    issueDate:  d.issueDate  || prev.issueDate  || "",
-    expiryDate: d.expiryDate || prev.expiryDate || (d.issueDate ? calcExpiry(d.issueDate, CERTIFICATES[type].validYears) : ""),
-    file: uploaded,
-  };
-  emp.certificates[type] = certData;
-  persist(async () => { await upsertCertificate(emp.id, type, certData, emp._certIds?.[type]); });
-  closeCertModal(); renderAll();
-  showToast(`${CERTIFICATES[type].label} certificate saved for ${emp.name}.`);
+  setSyncState("syncing");
+  try {
+    // Delete old storage file if replacing
+    if (file && prev.file?.filePath) await deleteStorageFile(prev.file.filePath);
+    const uploaded = file ? await readCertFile(file, emp.id, type) : prev.file || null;
+    const certData = {
+      issueDate:  d.issueDate  || prev.issueDate  || "",
+      expiryDate: d.expiryDate || prev.expiryDate || (d.issueDate ? calcExpiry(d.issueDate, CERTIFICATES[type].validYears) : ""),
+      file: uploaded,
+    };
+    emp.certificates[type] = certData;
+    // FIX BUG1: await the upsert immediately (no debounce for file ops), update _certIds
+    const certId = await upsertCertificate(emp.id, type, certData, emp._certIds?.[type]);
+    if (!emp._certIds) emp._certIds = {};
+    emp._certIds[type] = certId;
+    setSyncState("idle");
+    closeCertModal(); renderAll();
+    showToast(`${CERTIFICATES[type].label} saved for ${emp.name}.`);
+  } catch(err) {
+    console.error(err); setSyncState("error");
+    showToast(`Save failed: ${err.message}`);
+  }
 });
 
 // ── Per-section (BFS / OHC) wiring ────────────────────────────────────────────
@@ -246,21 +283,29 @@ function initSection(type) {
   // Add / edit employee
   employeeForm.addEventListener("submit", async e => {
     e.preventDefault(); if (!isEditor) return;
-    const d = formData(e.currentTarget);
+    const d        = formData(e.currentTarget);
     const existing = state.employees.find(x => x.id === d.editingId);
-    const dupId = state.employees.find(x => x.employeeId.toLowerCase() === d.employeeId.trim().toLowerCase() && x.id !== d.editingId);
+    const dupId    = state.employees.find(x => x.employeeId.toLowerCase() === d.employeeId.trim().toLowerCase() && x.id !== d.editingId);
     if (dupId) { showToast("Employee ID already in use."); return; }
-    const id = existing?.id || crypto.randomUUID();
+    const id        = existing?.id || crypto.randomUUID();
     const issueDate = parseDate(d[`${type}IssueDate`]);
-    const certData = existing?.certificates || createEmptyCertificates();
+    const certData  = existing ? JSON.parse(JSON.stringify(existing.certificates)) : createEmptyCertificates();
     if (issueDate) certData[type] = { ...(certData[type]||{}), issueDate, expiryDate: calcExpiry(issueDate, CERTIFICATES[type].validYears) };
-    const emp = { id, name: d.name.trim(), employeeId: d.employeeId.trim(), department: d.department.trim(), certificates: certData, _certIds: existing?._certIds || {}, createdAt: existing?.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString() };
+    const emp = { id, name: d.name.trim(), employeeId: d.employeeId.trim(), department: d.department.trim(),
+                  certificates: certData, _certIds: existing?._certIds || {},
+                  createdAt: existing?.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString() };
     state.employees = existing ? state.employees.map(x => x.id === existing.id ? emp : x) : [emp, ...state.employees];
-    resetEmployeeForm(type); renderAll();
-    persist(async () => {
+    resetEmployeeForm(type); renderAll(); setSyncState("syncing");
+    try {
       const dbId = await upsertEmployee(emp);
-      if (issueDate) await upsertCertificate(dbId, type, certData[type], emp._certIds?.[type]);
-    });
+      // FIX BUG3: update _certIds in state after successful DB write
+      if (issueDate) {
+        const certId = await upsertCertificate(dbId, type, certData[type], emp._certIds?.[type]);
+        const inState = state.employees.find(x => x.id === id);
+        if (inState) { if (!inState._certIds) inState._certIds = {}; inState._certIds[type] = certId; }
+      }
+      setSyncState("idle");
+    } catch(err) { console.error(err); setSyncState("error"); showToast(`Save failed: ${err.message}`); }
     showToast(existing ? "Employee updated." : "Employee added.");
   });
 
@@ -269,47 +314,48 @@ function initSection(type) {
   // Bulk cert toggle
   showBulkCertBtn.addEventListener("click", () => {
     const h = bulkCertSection.classList.toggle("hidden");
-    bulkEmpSection.classList.add("hidden");
-    showBulkEmpBtn.textContent  = "⬆ Bulk Upload Employees";
+    bulkEmpSection.classList.add("hidden"); showBulkEmpBtn.textContent = "⬆ Bulk Upload Employees";
     showBulkCertBtn.textContent = h ? `📎 Bulk Upload ${CERTIFICATES[type].label} Files` : "✕ Close Files";
   });
-
-  // Bulk employee toggle
+  // Bulk emp toggle
   showBulkEmpBtn.addEventListener("click", () => {
     const h = bulkEmpSection.classList.toggle("hidden");
-    bulkCertSection.classList.add("hidden");
-    showBulkCertBtn.textContent = `📎 Bulk Upload ${CERTIFICATES[type].label} Files`;
-    showBulkEmpBtn.textContent  = h ? "⬆ Bulk Upload Employees" : "✕ Close";
+    bulkCertSection.classList.add("hidden"); showBulkCertBtn.textContent = `📎 Bulk Upload ${CERTIFICATES[type].label} Files`;
+    showBulkEmpBtn.textContent = h ? "⬆ Bulk Upload Employees" : "✕ Close";
   });
 
   downloadTplBtn.addEventListener("click", () => downloadTemplate(type));
 
+  // CSV bulk employee upload
   bulkUploadForm.addEventListener("submit", async e => {
     e.preventDefault(); if (!isEditor) return;
     const file = e.currentTarget.elements.csvFile.files[0]; if (!file) return;
+    setSyncState("syncing");
     const result = await importFromCsv(await file.text());
     e.currentTarget.reset(); renderAll();
     showToast(`CSV done: ${result.added} added, ${result.updated} updated, ${result.skipped} skipped.`);
   });
 
   // Bulk cert file upload
-  let rows = [];
+  let bulkRows = [];
   bulkCertInput.addEventListener("change", () => {
     if (!bulkCertInput.files?.length) { bulkCertPreview.classList.add("hidden"); bulkCertActions.classList.add("hidden"); return; }
-    rows = buildPreview(bulkCertInput.files);
-    renderPreview(rows, bulkCertPreview, type);
+    bulkRows = buildPreview(bulkCertInput.files);
+    renderPreview(bulkRows, bulkCertPreview, type);
     bulkCertActions.classList.remove("hidden");
   });
   bulkCertConfirm.addEventListener("click", async () => {
     if (!isEditor) return;
     setSyncState("syncing");
-    const count = await applyBulkFiles(rows, type);
-    setSyncState("idle"); renderAll();
-    showToast(`${count} ${CERTIFICATES[type].label} file(s) attached.`);
-    bulkCertInput.value = ""; bulkCertPreview.classList.add("hidden"); bulkCertActions.classList.add("hidden"); rows = [];
+    try {
+      const count = await applyBulkFiles(bulkRows, type);
+      setSyncState("idle"); renderAll();
+      showToast(`${count} ${CERTIFICATES[type].label} file(s) attached.`);
+    } catch(err) { setSyncState("error"); showToast(`Bulk attach failed: ${err.message}`); }
+    bulkCertInput.value = ""; bulkCertPreview.classList.add("hidden"); bulkCertActions.classList.add("hidden"); bulkRows = [];
   });
   bulkCertClear.addEventListener("click", () => {
-    bulkCertInput.value = ""; bulkCertPreview.classList.add("hidden"); bulkCertActions.classList.add("hidden"); rows = [];
+    bulkCertInput.value = ""; bulkCertPreview.classList.add("hidden"); bulkCertActions.classList.add("hidden"); bulkRows = [];
   });
 
   search.addEventListener("input",      () => renderSectionRows(type));
@@ -323,12 +369,19 @@ function initSection(type) {
     const emp  = state.employees.find(x => x.id === d.employeeId); if (!emp) return;
     const file = e.currentTarget.elements.file.files[0];
     const prev = emp.certificates[type] || {};
-    const uploaded  = file ? await readCertFile(file) : prev.file || null;
-    const certData  = { issueDate: d.issueDate, expiryDate: d.expiryDate || calcExpiry(d.issueDate, CERTIFICATES[type].validYears), file: uploaded };
-    emp.certificates[type] = certData;
-    persist(async () => { await upsertCertificate(emp.id, type, certData, emp._certIds?.[type]); });
-    hideCertEdit(type); renderAll();
-    showToast(`${CERTIFICATES[type].label} saved for ${emp.name}.`);
+    setSyncState("syncing");
+    try {
+      if (file && prev.file?.filePath) await deleteStorageFile(prev.file.filePath);
+      const uploaded = file ? await readCertFile(file, emp.id, type) : prev.file || null;
+      const certData = { issueDate: d.issueDate, expiryDate: d.expiryDate || calcExpiry(d.issueDate, CERTIFICATES[type].validYears), file: uploaded };
+      emp.certificates[type] = certData;
+      // FIX BUG1: update _certIds after upsert
+      const certId = await upsertCertificate(emp.id, type, certData, emp._certIds?.[type]);
+      if (!emp._certIds) emp._certIds = {};
+      emp._certIds[type] = certId;
+      setSyncState("idle"); hideCertEdit(type); renderAll();
+      showToast(`${CERTIFICATES[type].label} saved for ${emp.name}.`);
+    } catch(err) { console.error(err); setSyncState("error"); showToast(`Save failed: ${err.message}`); }
   });
   certificateForm.elements.issueDate.addEventListener("change", e => {
     if (e.target.value) certificateForm.elements.expiryDate.value = calcExpiry(e.target.value, CERTIFICATES[type].validYears);
@@ -336,6 +389,7 @@ function initSection(type) {
   document.getElementById(`cancelCertEdit${sfx}`).addEventListener("click", () => hideCertEdit(type));
 }
 
+// ── Employee helpers ──────────────────────────────────────────────────────────
 function resetEmployeeForm(type) {
   const sfx = SECTION_SUFFIX[type];
   document.getElementById(`employeeForm${sfx}`).reset();
@@ -379,18 +433,25 @@ async function deleteEmployee(id) {
   if (!isEditor) return;
   const e = state.employees.find(x => x.id === id);
   if (!e || !confirm(`Remove ${e.name}?`)) return;
+  // Delete storage files first
+  for (const t of CERT_TYPES) { if (e.certificates[t]?.file?.filePath) await deleteStorageFile(e.certificates[t].file.filePath); }
   state.employees = state.employees.filter(x => x.id !== id);
-  renderAll();
-  persist(async () => { await deleteEmployeeFromDb(id); });
+  renderAll(); setSyncState("syncing");
+  try { await deleteEmployeeFromDb(id); setSyncState("idle"); } catch(err) { setSyncState("error"); showToast(`Delete failed: ${err.message}`); }
   showToast("Employee removed.");
 }
 async function clearCertificate(empId, type) {
   if (!isEditor) return;
   const e = state.employees.find(x => x.id === empId);
   if (!e || !confirm(`Delete ${CERTIFICATES[type].label} certificate for ${e.name}?`)) return;
-  e.certificates[type] = {};
-  renderAll();
-  persist(async () => { await deleteCertFromDb(empId, type); });
+  const oldPath = e.certificates[type]?.file?.filePath;
+  e.certificates[type] = {}; renderAll(); setSyncState("syncing");
+  try {
+    if (oldPath) await deleteStorageFile(oldPath);
+    await deleteCertFromDb(empId, type);
+    if (e._certIds) e._certIds[type] = null;
+    setSyncState("idle");
+  } catch(err) { setSyncState("error"); showToast(`Delete failed: ${err.message}`); }
   showToast(`${CERTIFICATES[type].label} certificate deleted.`);
 }
 
@@ -413,7 +474,6 @@ function matchFile(fileName) {
   const norm = s => s.toLowerCase().replace(/[^a-z0-9]/g, "");
   let emp = state.employees.find(e => e.employeeId.trim().toLowerCase() === base);
   if (!emp) emp = state.employees.find(e => norm(e.name) === norm(base));
-  if (!emp) emp = state.employees.find(e => base.includes(e.employeeId.trim().toLowerCase()));
   return emp ? { employee: emp } : null;
 }
 function renderPreview(rows, el, type) {
@@ -429,10 +489,18 @@ async function applyBulkFiles(rows, type) {
   for (const r of rows) {
     if (!r.match) continue;
     const emp = state.employees.find(e => e.id === r.match.employee.id); if (!emp) continue;
-    const fileObj = await readCertFile(r.file);
-    emp.certificates[type] = { ...(emp.certificates[type] || {}), file: fileObj };
-    await upsertCertificate(emp.id, type, emp.certificates[type], emp._certIds?.[type]);
-    count++;
+    try {
+      // Delete old file if replacing
+      if (emp.certificates[type]?.file?.filePath) await deleteStorageFile(emp.certificates[type].file.filePath);
+      const fileObj  = await readCertFile(r.file, emp.id, type);
+      const certData = { ...(emp.certificates[type]||{}), file: fileObj };
+      emp.certificates[type] = certData;
+      // FIX BUG2: update _certIds after each upsert
+      const certId = await upsertCertificate(emp.id, type, certData, emp._certIds?.[type]);
+      if (!emp._certIds) emp._certIds = {};
+      emp._certIds[type] = certId;
+      count++;
+    } catch(err) { console.error(`Failed to attach ${r.file.name}:`, err.message); }
   }
   return count;
 }
@@ -441,8 +509,9 @@ async function applyBulkFiles(rows, type) {
 alertSettingsForm.addEventListener("submit", async e => {
   e.preventDefault();
   const d = formData(e.currentTarget);
-  state.settings = { reminderDays: Number(d.reminderDays), managerEmail: (d.managerEmail || "").trim().toLowerCase() };
-  persist(async () => { await saveSettingsToDb(state.settings); });
+  state.settings = { reminderDays: Number(d.reminderDays), managerEmail: (d.managerEmail||"").trim().toLowerCase() };
+  setSyncState("syncing");
+  try { await saveSettingsToDb(state.settings); setSyncState("idle"); } catch(err) { setSyncState("error"); }
   renderAll();
   openGmailDraft(getAlertItems().map(summaryToItem));
 });
@@ -455,10 +524,9 @@ function openGmailDraft(items) {
   if (!items.length) { showToast("No alerts due."); return; }
   const to      = state.settings.managerEmail || "";
   const subject = encodeURIComponent(`UAE Kitchen Certificate Alert – ${items.length} item(s) need attention`);
-  const lines   = ["Hello,", "", `The following ${items.length} certificate renewal(s) require attention:`, "",
-    ...items.map(i => `• ${i.employeeName} (${i.employeeId}) · ${i.certType}: ${i.status}` + (i.expiryDate ? ` · Expires: ${fmtDate(i.expiryDate)}` : "") + (i.daysLeft !== null ? ` · ${fmtDays(i.daysLeft)}` : "")),
-    "", "Please arrange renewals and update the portal once new certificates are issued.", "", "UAE Kitchen – Compliance Portal",
-  ];
+  const lines   = ["Hello,","",`The following ${items.length} certificate renewal(s) require attention:`,"",
+    ...items.map(i=>`• ${i.employeeName} (${i.employeeId}) · ${i.certType}: ${i.status}`+(i.expiryDate?` · Expires: ${fmtDate(i.expiryDate)}`:"")+(i.daysLeft!==null?` · ${fmtDays(i.daysLeft)}`:"")),
+    "","Please arrange renewals and update the portal once new certificates are issued.","","UAE Kitchen – Compliance Portal"];
   window.open(`https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(to)}&su=${subject}&body=${encodeURIComponent(lines.join("\n"))}`, "_blank");
   showToast("Opening Gmail draft…");
 }
@@ -481,46 +549,45 @@ function renderAll() {
   renderAlertSettings(); renderAlertQueue();
 }
 function renderDeptFilterOptions() {
-  const depts = [...new Set(state.employees.map(e => e.department).filter(Boolean))].sort((a,b) => a.localeCompare(b));
+  const depts = [...new Set(state.employees.map(e=>e.department).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
   CERT_TYPES.forEach(type => {
     const el  = document.getElementById(`employeeDepartmentFilter${SECTION_SUFFIX[type]}`);
     const cur = el.value || "all";
-    el.innerHTML = ['<option value="all">All departments</option>', ...depts.map(d => `<option value="${escHtml(d)}">${escHtml(d)}</option>`)].join("");
+    el.innerHTML = ['<option value="all">All departments</option>', ...depts.map(d=>`<option value="${escHtml(d)}">${escHtml(d)}</option>`)].join("");
     el.value = depts.includes(cur) ? cur : "all";
   });
 }
 function renderDashboard() {
   const sums   = getCertSummaries();
-  const by     = countBy(sums, "status");
-  const urgent = sums.filter(s => s.status === "Expired" || s.status === "Expiring in 30 Days").sort((a,b) => a.daysLeft - b.daysLeft);
-  const uc     = (by.Expired||0) + (by["Expiring in 30 Days"]||0);
+  const by     = countBy(sums,"status");
+  const urgent = sums.filter(s=>s.status==="Expired"||s.status==="Expiring in 30 Days").sort((a,b)=>a.daysLeft-b.daysLeft);
+  const uc     = (by.Expired||0)+(by["Expiring in 30 Days"]||0);
   document.getElementById("employeeMetric").textContent = state.employees.length;
   document.getElementById("urgentMetric").textContent   = uc;
   document.getElementById("attentionCount").textContent = `${urgent.length} items`;
   const pill = document.getElementById("overallStatus");
-  pill.textContent = uc ? "Action Needed" : "Compliant";
-  pill.classList.toggle("risk", Boolean(uc));
+  pill.textContent = uc ? "Action Needed" : "Compliant"; pill.classList.toggle("risk", Boolean(uc));
   CERT_TYPES.forEach(type => {
-    const tb = countBy(state.employees.map(e => getCertSummary(e, type)), "status");
-    document.getElementById(`${type}ValidMetric`).textContent   = tb.Valid || 0;
-    document.getElementById(`${type}NinetyMetric`).textContent  = tb["Expiring in 90 Days"] || 0;
-    document.getElementById(`${type}ThirtyMetric`).textContent  = tb["Expiring in 30 Days"] || 0;
-    document.getElementById(`${type}ExpiredMetric`).textContent = tb.Expired || 0;
-    document.getElementById(`${type}MissingMetric`).textContent = tb.Missing || 0;
+    const tb = countBy(state.employees.map(e=>getCertSummary(e,type)),"status");
+    document.getElementById(`${type}ValidMetric`).textContent   = tb.Valid||0;
+    document.getElementById(`${type}NinetyMetric`).textContent  = tb["Expiring in 90 Days"]||0;
+    document.getElementById(`${type}ThirtyMetric`).textContent  = tb["Expiring in 30 Days"]||0;
+    document.getElementById(`${type}ExpiredMetric`).textContent = tb.Expired||0;
+    document.getElementById(`${type}MissingMetric`).textContent = tb.Missing||0;
   });
-  setRows("attentionRows", urgent.slice(0,8).map(s => `<tr>
+  setRows("attentionRows", urgent.slice(0,8).map(s=>`<tr>
     <td>${escHtml(s.emp.name)}<br><small>${escHtml(s.emp.employeeId)}</small></td>
     <td>${escHtml(s.cert.label)}</td><td>${fmtDate(s.expiryDate)}</td><td>${badge(s.status)}</td>
     <td><button class="send-manager-btn" type="button" data-action="mail-alert" data-item='${escAttr(JSON.stringify(summaryToItem(s)))}'>✉ Send to Manager</button></td>
-  </tr>`), 5, "No urgent renewals.");
-  const grouped = sums.reduce((g,s) => {
-    const d = s.emp.department || "Unassigned"; g[d] ||= {d,total:0,urgent:0,warn:0};
+  </tr>`),5,"No urgent renewals.");
+  const grouped = sums.reduce((g,s)=>{
+    const d=s.emp.department||"Unassigned"; g[d]||={d,total:0,urgent:0,warn:0};
     g[d].total++; if(s.status==="Expired"||s.status==="Expiring in 30 Days")g[d].urgent++; if(s.status==="Expiring in 90 Days")g[d].warn++;
     return g;
-  }, {});
-  document.getElementById("departmentRiskList").innerHTML = Object.values(grouped).sort((a,b) => b.urgent-a.urgent).map(x =>
+  },{});
+  document.getElementById("departmentRiskList").innerHTML=Object.values(grouped).sort((a,b)=>b.urgent-a.urgent).map(x=>
     `<div class="risk-item"><strong>${escHtml(x.d)}</strong><span>${x.urgent} urgent · ${x.warn} due soon · ${x.total} total</span></div>`
-  ).join("") || '<div class="empty-state">No records yet.</div>';
+  ).join("")||'<div class="empty-state">No records yet.</div>';
 }
 function renderSectionRows(type) {
   const sfx  = SECTION_SUFFIX[type];
@@ -528,39 +595,38 @@ function renderSectionRows(type) {
   const dept = document.getElementById(`employeeDepartmentFilter${sfx}`).value;
   const stat = document.getElementById(`employeeStatusFilter${sfx}`).value;
   const emps = state.employees.filter(e => {
-    const s = getCertSummary(e, type);
-    return [e.name, e.employeeId, e.department].join(" ").toLowerCase().includes(q)
-      && (dept === "all" || e.department === dept)
-      && (stat === "all" || (stat === "Expiring" ? (s.status === "Expiring in 30 Days" || s.status === "Expiring in 90 Days") : s.status === stat));
+    const s = getCertSummary(e,type);
+    return [e.name,e.employeeId,e.department].join(" ").toLowerCase().includes(q)
+      && (dept==="all"||e.department===dept)
+      && (stat==="all"||(stat==="Expiring"?(s.status==="Expiring in 30 Days"||s.status==="Expiring in 90 Days"):s.status===stat));
   });
-  setRows(`staffRows${sfx}`, emps.map(e => {
-    const s = getCertSummary(e, type);
+  setRows(`staffRows${sfx}`, emps.map(e=>{
+    const s = getCertSummary(e,type);
     const uploadBtn = isEditor && !s.record.file
       ? `<button class="upload-cert-btn" title="Upload ${CERTIFICATES[type].label} file" data-action="upload-cert" data-eid="${e.id}" data-type="${type}">＋</button>` : "";
     const editorActions = isEditor ? `
       <button class="text-btn" data-action="edit-emp" data-id="${e.id}" data-section="${type}">Edit</button>
       <button class="text-btn danger" data-action="del-emp" data-id="${e.id}">Remove</button>` : "";
     return `<tr>
-      <td><strong>${escHtml(e.name)}</strong></td>
-      <td>${escHtml(e.employeeId)}</td><td>${escHtml(e.department)}</td>
-      <td>${isEditor ? `<button class="cert-status-btn" data-action="edit-cert" data-eid="${e.id}" data-type="${type}">${badge(s.status)}</button>` : badge(s.status)}</td>
+      <td><strong>${escHtml(e.name)}</strong></td><td>${escHtml(e.employeeId)}</td><td>${escHtml(e.department)}</td>
+      <td>${isEditor?`<button class="cert-status-btn" data-action="edit-cert" data-eid="${e.id}" data-type="${type}">${badge(s.status)}</button>`:badge(s.status)}</td>
       <td>${fmtDate(s.issueDate)}</td><td>${fmtDate(s.expiryDate)}</td>
       <td class="cert-file-cell">
         ${uploadBtn}${fileLink(s.record.file)}
-        ${isEditor && (s.record.file || s.record.issueDate) ? `<button class="icon-btn danger" data-action="del-cert" data-eid="${e.id}" data-type="${type}">🗑</button>` : ""}
+        ${isEditor&&(s.record.file||s.record.issueDate)?`<button class="icon-btn danger" data-action="del-cert" data-eid="${e.id}" data-type="${type}">🗑</button>`:""}
       </td>
-      ${isEditor ? `<td class="row-actions editor-only">${editorActions}</td>` : ""}
+      ${isEditor?`<td class="row-actions editor-only">${editorActions}</td>`:""}
     </tr>`;
-  }), isEditor ? 8 : 7, "No employees match this filter.");
+  }), isEditor?8:7, "No employees match this filter.");
 }
 function renderAlertSettings() {
   alertSettingsForm.elements.reminderDays.value = String(state.settings.reminderDays);
-  alertSettingsForm.elements.managerEmail.value = state.settings.managerEmail || "";
+  alertSettingsForm.elements.managerEmail.value = state.settings.managerEmail||"";
 }
 function renderAlertQueue() {
   const items = getAlertItems();
   document.getElementById("alertQueue").innerHTML = items.length
-    ? items.map(s => `<div class="alert-item">
+    ? items.map(s=>`<div class="alert-item">
         <div><strong>${escHtml(s.emp.name)} · ${escHtml(s.cert.label)} ${escHtml(s.status.toLowerCase())}</strong>
         <span>${escHtml(s.emp.department)} · expires ${fmtDate(s.expiryDate)} · ${fmtDays(s.daysLeft)}</span></div>
         <div class="alert-actions"><button class="primary-btn send-manager-btn" data-action="mail-alert" data-item='${escAttr(JSON.stringify(summaryToItem(s)))}'>✉ Send to Manager</button></div>
@@ -569,125 +635,116 @@ function renderAlertQueue() {
 }
 
 // ── Certificate logic ──────────────────────────────────────────────────────────
-function getCertSummaries() { return state.employees.flatMap(e => CERT_TYPES.map(t => getCertSummary(e, t))); }
-function getCertSummary(emp, type) {
-  const cert = CERTIFICATES[type], record = emp.certificates[type] || {};
-  const issueDate  = record.issueDate  || "";
-  const expiryDate = record.expiryDate || (issueDate ? calcExpiry(issueDate, cert.validYears) : "");
-  const daysLeft   = expiryDate ? daysUntil(expiryDate) : Infinity;
-  return { emp, type, cert, record, issueDate, expiryDate, daysLeft, status: certStatus(expiryDate) };
+function getCertSummaries() { return state.employees.flatMap(e=>CERT_TYPES.map(t=>getCertSummary(e,t))); }
+function getCertSummary(emp,type) {
+  const cert=CERTIFICATES[type], record=emp.certificates[type]||{};
+  const issueDate=record.issueDate||"", expiryDate=record.expiryDate||(issueDate?calcExpiry(issueDate,cert.validYears):"");
+  const daysLeft=expiryDate?daysUntil(expiryDate):Infinity;
+  return {emp,type,cert,record,issueDate,expiryDate,daysLeft,status:certStatus(expiryDate)};
 }
-function certStatus(exp) {
-  if (!exp) return "Missing";
-  const d = daysUntil(exp);
-  if (d < 0) return "Expired"; if (d <= 30) return "Expiring in 30 Days"; if (d <= 90) return "Expiring in 90 Days";
-  return "Valid";
-}
-function daysUntil(ds) {
-  const t = d => new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  return Math.ceil((t(new Date(`${ds}T00:00:00`)) - t(new Date())) / 86400000);
-}
-function calcExpiry(issue, years) {
-  const d = new Date(`${issue}T00:00:00`); d.setFullYear(d.getFullYear() + years); return d.toISOString().slice(0, 10);
-}
-function summaryToItem(s) {
-  return { employeeName: s.emp.name, employeeId: s.emp.employeeId, department: s.emp.department, certType: s.cert.label, status: s.status, expiryDate: s.expiryDate || null, daysLeft: isFinite(s.daysLeft) ? s.daysLeft : null };
-}
-function getAlertItems() {
-  return getCertSummaries().filter(s => s.status !== "Missing" && (s.daysLeft < 0 || s.daysLeft <= state.settings.reminderDays)).sort((a,b) => a.daysLeft - b.daysLeft);
-}
+function certStatus(exp){if(!exp)return"Missing";const d=daysUntil(exp);if(d<0)return"Expired";if(d<=30)return"Expiring in 30 Days";if(d<=90)return"Expiring in 90 Days";return"Valid";}
+function daysUntil(ds){const t=d=>new Date(d.getFullYear(),d.getMonth(),d.getDate());return Math.ceil((t(new Date(`${ds}T00:00:00`))-t(new Date()))/86400000);}
+function calcExpiry(issue,years){const d=new Date(`${issue}T00:00:00`);d.setFullYear(d.getFullYear()+years);return d.toISOString().slice(0,10);}
+function summaryToItem(s){return{employeeName:s.emp.name,employeeId:s.emp.employeeId,department:s.emp.department,certType:s.cert.label,status:s.status,expiryDate:s.expiryDate||null,daysLeft:isFinite(s.daysLeft)?s.daysLeft:null};}
+function getAlertItems(){return getCertSummaries().filter(s=>s.status!=="Missing"&&(s.daysLeft<0||s.daysLeft<=state.settings.reminderDays)).sort((a,b)=>a.daysLeft-b.daysLeft);}
 
 // ── CSV import ─────────────────────────────────────────────────────────────────
 async function importFromCsv(text) {
-  const rows = parseCsv(text).filter(r => r.some(c => c.trim()));
-  if (rows.length < 2) return { added:0, updated:0, skipped:0 };
-  const hdrs = rows[0].map(h => h.toLowerCase().replace(/[^a-z0-9]/g, ""));
-  rows.slice(1).forEach(r => { while (r.length < hdrs.length) r.push(""); });
-  let added = 0, updated = 0, skipped = 0;
-  for (const row of rows.slice(1)) {
-    const rec = hdrs.reduce((o,h,i) => { o[h] = (row[i]||"").trim(); return o; }, {});
-    if (!rec.employeeid || !rec.name || !rec.department) { skipped++; continue; }
-    const existing = state.employees.find(e => e.employeeId.toLowerCase() === rec.employeeid.toLowerCase());
-    const certs    = existing?.certificates || createEmptyCertificates();
-    const bfsDate  = parseDate(rec.bfsissuedate || rec.bfsdate || rec.bfs || "");
-    const ohcDate  = parseDate(rec.ohcissuedate || rec.ohcdate || rec.ohc || "");
-    if (bfsDate) certs.bfs = { issueDate: bfsDate, expiryDate: calcExpiry(bfsDate, 2), file: certs.bfs?.file || null };
-    if (ohcDate) certs.ohc = { issueDate: ohcDate, expiryDate: calcExpiry(ohcDate, 1), file: certs.ohc?.file || null };
-    const emp = { id: existing?.id || crypto.randomUUID(), name: rec.name, employeeId: rec.employeeid, department: rec.department, certificates: certs, _certIds: existing?._certIds || {}, createdAt: existing?.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString() };
-    if (existing) { state.employees = state.employees.map(x => x.id === existing.id ? emp : x); updated++; }
+  const rows = parseCsv(text).filter(r=>r.some(c=>c.trim()));
+  if (rows.length<2) return {added:0,updated:0,skipped:0};
+  // FIX BUG6: only use known column names
+  const hdrs = rows[0].map(h=>h.toLowerCase().replace(/[^a-z0-9]/g,""));
+  const idx  = k => hdrs.indexOf(k);
+  let added=0,updated=0,skipped=0;
+  for (const raw of rows.slice(1)) {
+    const row = [...raw]; while(row.length<hdrs.length) row.push("");
+    const get = k => (row[idx(k)]||"").trim();
+    const empId=get("employeeid"), name=get("name"), dept=get("department");
+    if (!empId||!name||!dept) { skipped++; continue; }
+    const existing = state.employees.find(e=>e.employeeId.toLowerCase()===empId.toLowerCase());
+    const certs    = existing ? JSON.parse(JSON.stringify(existing.certificates)) : createEmptyCertificates();
+    // FIX BUG6: only read exact known column names
+    const bfsDate  = parseDate(get("bfsissuedate"));
+    const ohcDate  = parseDate(get("ohcissuedate"));
+    if (bfsDate) certs.bfs = {issueDate:bfsDate, expiryDate:calcExpiry(bfsDate,2), file:certs.bfs?.file||null};
+    if (ohcDate) certs.ohc = {issueDate:ohcDate, expiryDate:calcExpiry(ohcDate,1), file:certs.ohc?.file||null};
+    const emp = {id:existing?.id||crypto.randomUUID(), name, employeeId:empId, department:dept,
+                 certificates:certs, _certIds:existing?._certIds||{},
+                 createdAt:existing?.createdAt||new Date().toISOString(), updatedAt:new Date().toISOString()};
+    if (existing) { state.employees=state.employees.map(x=>x.id===existing.id?emp:x); updated++; }
     else { state.employees.unshift(emp); added++; }
     try {
-      const dbId = await upsertEmployee(emp);
-      if (bfsDate) await upsertCertificate(dbId, "bfs", certs.bfs, emp._certIds?.bfs);
-      if (ohcDate) await upsertCertificate(dbId, "ohc", certs.ohc, emp._certIds?.ohc);
-    } catch(e) { console.error("CSV upsert error:", e); }
+      const dbId   = await upsertEmployee(emp);
+      // FIX BUG3: write _certIds back to state
+      const inState = state.employees.find(x=>x.id===emp.id);
+      if (bfsDate) { const cid=await upsertCertificate(dbId,"bfs",certs.bfs,emp._certIds?.bfs); if(inState){if(!inState._certIds)inState._certIds={};inState._certIds.bfs=cid;} }
+      if (ohcDate) { const cid=await upsertCertificate(dbId,"ohc",certs.ohc,emp._certIds?.ohc); if(inState){if(!inState._certIds)inState._certIds={};inState._certIds.ohc=cid;} }
+    } catch(err) { console.error("CSV row upsert error:",err.message); }
   }
   setSyncState("idle");
-  return { added, updated, skipped };
+  return {added,updated,skipped};
 }
 function downloadTemplate(type) {
-  const cols = type === "bfs" ? ["employeeId","name","department","bfsIssueDate"] : ["employeeId","name","department","ohcIssueDate"];
-  const ex   = type === "bfs" ? ["CK-1001","Sample Employee","Kitchen","2026-01-15"] : ["CK-1001","Sample Employee","Kitchen","2026-03-01"];
-  downloadFile(`uae-kitchen-${type}-template-${today()}.csv`, [cols,ex].map(r => r.map(csvEsc).join(",")).join("\n"), "text/csv;charset=utf-8");
+  const cols = type==="bfs" ? ["employeeId","name","department","bfsIssueDate"] : ["employeeId","name","department","ohcIssueDate"];
+  const ex   = type==="bfs" ? ["CK-1001","Sample Employee","Kitchen","2026-01-15"] : ["CK-1001","Sample Employee","Kitchen","2026-03-01"];
+  downloadFile(`uae-kitchen-${type}-template-${today()}.csv`,[cols,ex].map(r=>r.map(csvEsc).join(",")).join("\n"),"text/csv;charset=utf-8");
 }
 
 // ── PDF export ─────────────────────────────────────────────────────────────────
 function exportPDF() {
   if (!window.jspdf?.jsPDF) { showToast("PDF library still loading — try again."); return; }
-  const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ unit:"pt", format:"a4" });
-  const pageW = doc.internal.pageSize.getWidth(), margin = 40; let y = 50;
-  doc.setFont("helvetica","bold"); doc.setFontSize(20); doc.setTextColor(17,24,39); doc.text("CALO", margin, y);
-  doc.setFontSize(11); doc.setFont("helvetica","normal"); doc.setTextColor(107,114,128); doc.text("UAE Kitchen Compliance Portal", margin, y+16);
-  doc.setFontSize(14); doc.setFont("helvetica","bold"); doc.setTextColor(17,24,39); doc.text("Staff Certificate Compliance Report", margin, y+40);
-  doc.setFontSize(9); doc.setFont("helvetica","normal"); doc.setTextColor(107,114,128); doc.text(`Generated: ${fmtDate(today())}`, margin, y+56); y += 80;
-  const sums = getCertSummaries(), by = countBy(sums,"status"), uc = (by.Expired||0)+(by["Expiring in 30 Days"]||0);
-  const bfsBy = countBy(state.employees.map(e=>getCertSummary(e,"bfs")),"status");
-  const ohcBy = countBy(state.employees.map(e=>getCertSummary(e,"ohc")),"status");
-  doc.setFontSize(11); doc.setFont("helvetica","bold"); doc.setTextColor(17,24,39); doc.text("EXECUTIVE SUMMARY", margin, y); y+=14;
+  const {jsPDF}=window.jspdf, doc=new jsPDF({unit:"pt",format:"a4"});
+  const pageW=doc.internal.pageSize.getWidth(), margin=40; let y=50;
+  doc.setFont("helvetica","bold");doc.setFontSize(20);doc.setTextColor(17,24,39);doc.text("CALO",margin,y);
+  doc.setFontSize(11);doc.setFont("helvetica","normal");doc.setTextColor(107,114,128);doc.text("UAE Kitchen Compliance Portal",margin,y+16);
+  doc.setFontSize(14);doc.setFont("helvetica","bold");doc.setTextColor(17,24,39);doc.text("Staff Certificate Compliance Report",margin,y+40);
+  doc.setFontSize(9);doc.setFont("helvetica","normal");doc.setTextColor(107,114,128);doc.text(`Generated: ${fmtDate(today())}`,margin,y+56);y+=80;
+  const sums=getCertSummaries(),by=countBy(sums,"status"),uc=(by.Expired||0)+(by["Expiring in 30 Days"]||0);
+  const bfsBy=countBy(state.employees.map(e=>getCertSummary(e,"bfs")),"status");
+  const ohcBy=countBy(state.employees.map(e=>getCertSummary(e,"ohc")),"status");
+  doc.setFontSize(11);doc.setFont("helvetica","bold");doc.setTextColor(17,24,39);doc.text("EXECUTIVE SUMMARY",margin,y);y+=14;
   const tiles=[{label:"TOTAL EMPLOYEES",value:state.employees.length},{label:"BFS VALID",value:bfsBy.Valid||0},{label:"BFS EXPIRING 30D",value:bfsBy["Expiring in 30 Days"]||0},{label:"BFS EXPIRED",value:bfsBy.Expired||0},{label:"OHC VALID",value:ohcBy.Valid||0},{label:"OHC EXPIRING 30D",value:ohcBy["Expiring in 30 Days"]||0},{label:"OHC EXPIRED",value:ohcBy.Expired||0},{label:"ACTION NEEDED",value:uc}];
-  const tcols=4,gap=10,tileH=52,tileW=(pageW-margin*2-gap*(tcols-1))/tcols;
-  tiles.forEach((t,i)=>{const col=i%tcols,row=Math.floor(i/tcols),x=margin+col*(tileW+gap),ty=y+row*(tileH+gap);doc.setDrawColor(226,230,236);doc.setFillColor(248,250,252);doc.roundedRect(x,ty,tileW,tileH,4,4,"FD");doc.setFontSize(7);doc.setFont("helvetica","bold");doc.setTextColor(107,114,128);doc.text(t.label,x+10,ty+17,{maxWidth:tileW-20});doc.setFontSize(18);doc.setFont("helvetica","bold");doc.setTextColor(17,24,39);doc.text(String(t.value),x+10,ty+38);});
-  y+=Math.ceil(tiles.length/tcols)*(tileH+gap)+18;
+  const tc=4,gap=10,tH=52,tW=(pageW-margin*2-gap*(tc-1))/tc;
+  tiles.forEach((t,i)=>{const col=i%tc,row=Math.floor(i/tc),x=margin+col*(tW+gap),ty=y+row*(tH+gap);doc.setDrawColor(226,230,236);doc.setFillColor(248,250,252);doc.roundedRect(x,ty,tW,tH,4,4,"FD");doc.setFontSize(7);doc.setFont("helvetica","bold");doc.setTextColor(107,114,128);doc.text(t.label,x+10,ty+17,{maxWidth:tW-20});doc.setFontSize(18);doc.setFont("helvetica","bold");doc.setTextColor(17,24,39);doc.text(String(t.value),x+10,ty+38);});
+  y+=Math.ceil(tiles.length/tc)*(tH+gap)+18;
   doc.setFontSize(11);doc.setFont("helvetica","bold");doc.setTextColor(17,24,39);doc.text("BFS — Basic Food Safety",margin,y);
   doc.autoTable({startY:y+8,margin:{left:margin,right:margin},head:[["Name","ID","Department","Status","Issue Date","Expiry Date"]],body:state.employees.map(e=>{const s=getCertSummary(e,"bfs");return[e.name,e.employeeId,e.department,s.status,fmtDate(s.issueDate),fmtDate(s.expiryDate)];}),styles:{fontSize:8,cellPadding:5},headStyles:{fillColor:[22,163,74],textColor:255,fontStyle:"bold"},theme:"grid"});
-  y=doc.lastAutoTable.finalY+26; if(y>680){doc.addPage();y=50;}
+  y=doc.lastAutoTable.finalY+26;if(y>680){doc.addPage();y=50;}
   doc.setFontSize(11);doc.setFont("helvetica","bold");doc.setTextColor(17,24,39);doc.text("OHC — Occupational Health Card",margin,y);
   doc.autoTable({startY:y+8,margin:{left:margin,right:margin},head:[["Name","ID","Department","Status","Issue Date","Expiry Date"]],body:state.employees.map(e=>{const s=getCertSummary(e,"ohc");return[e.name,e.employeeId,e.department,s.status,fmtDate(s.issueDate),fmtDate(s.expiryDate)];}),styles:{fontSize:8,cellPadding:5},headStyles:{fillColor:[109,40,217],textColor:255,fontStyle:"bold"},theme:"grid"});
   const pc=doc.internal.getNumberOfPages();
   for(let p=1;p<=pc;p++){doc.setPage(p);doc.setFontSize(8);doc.setTextColor(156,163,175);doc.text("UAE Kitchen Compliance Portal · Confidential",pageW/2,doc.internal.pageSize.getHeight()-20,{align:"center"});}
-  doc.save(`uae-kitchen-compliance-${today()}.pdf`); showToast("PDF report ready.");
+  doc.save(`uae-kitchen-compliance-${today()}.pdf`);showToast("PDF report ready.");
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
-function createEmptyCertificates() { return { bfs:{}, ohc:{} }; }
-function formData(form) { return Object.fromEntries(new FormData(form).entries()); }
-function setRows(id, rows, cols, empty) { document.getElementById(id).innerHTML = rows.length ? rows.join("") : `<tr><td colspan="${cols}" class="empty-state">${empty}</td></tr>`; }
-function countBy(arr, key) { return arr.reduce((c,i) => { c[i[key]] = (c[i[key]]||0)+1; return c; }, {}); }
-function badge(status) {
-  const cls = status==="Valid"?"good":status==="Expiring in 90 Days"?"watch":status==="Expiring in 30 Days"?"warn":status==="Missing"?"neutral":"bad";
-  return `<span class="badge ${cls}">${escHtml(status)}</span>`;
-}
-function fmtDate(v) { if(!v)return"—"; return new Intl.DateTimeFormat("en-US",{year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date(`${v}T00:00:00`)); }
-function fmtDays(d) { if(!isFinite(d))return"not recorded"; if(d<0)return`${Math.abs(d)} days overdue`; if(d===0)return"expires today"; return`${d} days remaining`; }
-function fileLink(f) { if(!f?.dataUrl)return'<span class="muted">—</span>'; return`<a class="table-link" href="${f.dataUrl}" download="${escHtml(f.name)}">${escHtml(f.name)}</a>`; }
-function escHtml(v) { return String(v??"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;"); }
-function escAttr(v) { return String(v??"").replace(/'/g,"&#039;").replace(/"/g,"&quot;"); }
-async function readCertFile(file) {
-  if(!file)return null;
-  if(file.type!=="application/pdf"&&!file.type.startsWith("image/")){showToast("Upload a PDF or image.");throw new Error("bad type");}
-  return{name:file.name,type:file.type,size:file.size,dataUrl:await toDataUrl(file),uploadedAt:new Date().toISOString()};
-}
-function toDataUrl(file) { return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=()=>rej(r.error);r.readAsDataURL(file);}); }
+function createEmptyCertificates(){return{bfs:{},ohc:{}};}
+function formData(form){return Object.fromEntries(new FormData(form).entries());}
+function setRows(id,rows,cols,empty){document.getElementById(id).innerHTML=rows.length?rows.join(""):`<tr><td colspan="${cols}" class="empty-state">${empty}</td></tr>`;}
+function countBy(arr,key){return arr.reduce((c,i)=>{c[i[key]]=(c[i[key]]||0)+1;return c;},{});}
+function badge(status){const cls=status==="Valid"?"good":status==="Expiring in 90 Days"?"watch":status==="Expiring in 30 Days"?"warn":status==="Missing"?"neutral":"bad";return`<span class="badge ${cls}">${escHtml(status)}</span>`;}
+function fmtDate(v){if(!v)return"—";return new Intl.DateTimeFormat("en-US",{year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date(`${v}T00:00:00`));}
+function fmtDays(d){if(!isFinite(d))return"not recorded";if(d<0)return`${Math.abs(d)} days overdue`;if(d===0)return"expires today";return`${d} days remaining`;}
+function escHtml(v){return String(v??"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;");}
+function escAttr(v){return String(v??"").replace(/'/g,"&#039;").replace(/"/g,"&quot;");}
+function toDataUrl(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=()=>rej(r.error);r.readAsDataURL(file);});}
 function downloadFile(name,content,type){const a=Object.assign(document.createElement("a"),{href:URL.createObjectURL(new Blob([content],{type})),download:name});a.click();URL.revokeObjectURL(a.href);}
 function parseCsv(text){const rows=[];let row=[],cell="",inQ=false;for(let i=0;i<text.length;i++){const c=text[i],n=text[i+1];if(c==='"'&&inQ&&n==='"'){cell+='"';i++;}else if(c==='"'){inQ=!inQ;}else if(c===","&&!inQ){row.push(cell);cell="";}else if((c==="\n"||c==="\r")&&!inQ){if(c==="\r"&&n==="\n")i++;row.push(cell);rows.push(row);row=[];cell="";}else{cell+=c;}}row.push(cell);rows.push(row);return rows;}
 function csvEsc(v){const s=String(v??"");return/[,"\n\r]/.test(s)?`"${s.replaceAll('"','""')}"`  :s;}
-function parseDate(v){if(!v||!String(v).trim())return null;const s=String(v).trim();if(/^\d{4}-\d{2}-\d{2}$/.test(s)){const d=new Date(`${s}T00:00:00`);return isNaN(d)?null:s;}const ey=yy=>{const n=parseInt(yy,10);return String(n<=29?2000+n:1900+n);};const nm=s.match(/^(\d{1,2})[\s\-\/]([A-Za-z]{3,9})[\s\-\/,]*(\d{2,4})$/);if(nm){const[,dd,mon,ry]=nm;const yyyy=ry.length===2?ey(ry):ry;const d=new Date(`${dd} ${mon} ${yyyy}`);if(!isNaN(d))return d.toISOString().slice(0,10);}const dmy=s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);if(dmy){const[,dd,mm,ry]=dmy;const yyyy=ry.length===2?ey(ry):ry;const iso=`${yyyy}-${mm.padStart(2,'0')}-${dd.padStart(2,'0')}`;const d=new Date(`${iso}T00:00:00`);if(!isNaN(d))return iso;}const d=new Date(s);if(!isNaN(d))return d.toISOString().slice(0,10);return null;}
+function parseDate(v){if(!v||!String(v).trim())return null;const s=String(v).trim();if(/^\d{4}-\d{2}-\d{2}$/.test(s)){const d=new Date(`${s}T00:00:00`);return isNaN(d)?null:s;}const ey=yy=>{const n=parseInt(yy,10);return String(n<=29?2000+n:1900+n);};const nm=s.match(/^(\d{1,2})[\s\-\/]([A-Za-z]{3,9})[\s\-\/,]*(\d{2,4})$/);if(nm){const[,dd,mon,ry]=nm;const yyyy=ry.length===2?ey(ry):ry;const d=new Date(`${dd} ${mon} ${yyyy}`);if(!isNaN(d))return d.toISOString().slice(0,10);}const dmy=s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);if(dmy){const[,dd,mm,ry]=dmy;const yyyy=ry.length===2?ey(ry):ry;const iso=`${yyyy}-${mm.padStart(2,"0")}-${dd.padStart(2,"0")}`;const d=new Date(`${iso}T00:00:00`);if(!isNaN(d))return iso;}const d=new Date(s);if(!isNaN(d))return d.toISOString().slice(0,10);return null;}
 function today(){return new Date().toISOString().slice(0,10);}
-function showToast(msg){toast.textContent=msg;toast.classList.add("visible");clearTimeout(showToast._t);showToast._t=setTimeout(()=>toast.classList.remove("visible"),2600);}
+function showToast(msg){toast.textContent=msg;toast.classList.add("visible");clearTimeout(showToast._t);showToast._t=setTimeout(()=>toast.classList.remove("visible"),3000);}
 
-// ── Boot ───────────────────────────────────────────────────────────────────────
+// ── Boot — FIX BUG5: single entry point, no race ──────────────────────────────
 CERT_TYPES.forEach(initSection);
-// Check for existing Supabase session (auto-login if already signed in)
-sb.auth.getSession().then(({ data: { session: s } }) => { if (s?.user) onSignIn(s.user); else render(); });
-sb.auth.onAuthStateChange((_event, s) => { if (!s) { session=null; isEditor=false; state={employees:[],settings:{...defaultSettings}}; render(); } });
+render(); // show login immediately
+
+sb.auth.getSession().then(({ data: { session: s } }) => {
+  _bootDone = true;
+  if (s?.user) onSignIn(s.user); // auto-login if session exists
+});
+
+sb.auth.onAuthStateChange((_event, s) => {
+  if (!_bootDone) return; // ignore the initial fire before getSession resolves
+  if (!s) { session=null; isEditor=false; state={employees:[],settings:{...defaultSettings}}; render(); }
+});
