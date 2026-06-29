@@ -774,9 +774,10 @@ async function importFromCsv(text) {
     const existing = state.employees.find(e => e.employeeId.toLowerCase() === empId.toLowerCase());
     const id = existing?.id || crypto.randomUUID();
 
-    const empRow = { id, name, employee_id: empId, department: dept, updated_at: new Date().toISOString() };
+    const createdAt = existing?.createdAt || new Date().toISOString();
+    const empRow = { id, name, employee_id: empId, department: dept, created_at: createdAt, updated_at: new Date().toISOString() };
     if (existing) toUpdate.push(empRow);
-    else          toInsert.push({ ...empRow, created_at: new Date().toISOString() });
+    else          toInsert.push(empRow);
 
     if (bfsDate) certRows.push({ employee_id: id, type: "bfs", issue_date: bfsDate, expiry_date: calcExpiry(bfsDate, 2), updated_at: new Date().toISOString() });
     if (ohcDate) certRows.push({ employee_id: id, type: "ohc", issue_date: ohcDate, expiry_date: calcExpiry(ohcDate, 1), updated_at: new Date().toISOString() });
