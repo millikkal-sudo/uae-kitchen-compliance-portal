@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>UAE Kitchen - Certificate Viewer</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #f4f6f9; --surface: #ffffff; --border: #e2e6ec; --text: #111827;
+      --text-muted: #6b7280; --accent: #16a34a; --accent-dark: #15803d;
+      --danger: #dc2626; --warn: #d97706; --blue: #2563eb;
+      --radius: 10px; --sidebar-w: 220px;
+    }
+    html, body { height: 100%; font-family: system-ui, -apple-system, sans-serif; font-size: 14px; color: var(--text); background: var(--bg); }
+    button { cursor: pointer; font: inherit; border: none; border-radius: 7px; }
+    input, select { font: inherit; border: 1px solid var(--border); border-radius: 7px; padding: 7px 10px; background: var(--surface); color: var(--text); }
+    input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb,var(--accent) 15%,transparent); }
+    table { width: 100%; border-collapse: collapse; }
+    th { text-align: left; padding: 9px 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); border-bottom: 1px solid var(--border); white-space: nowrap; }
+    td { padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #fafbfc; }
+    .hidden { display: none !important; }
+    .muted { color: var(--text-muted); }
+    /* Login */
+    .login-view { min-height: 100vh; display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden; background: #0a1628; }
+    .login-bg { position: absolute; inset: 0; background: linear-gradient(135deg,#0a1628 0%,#12243e 50%,#0d1f35 100%); }
+    .login-shadow { position: absolute; inset: 0; background: radial-gradient(ellipse at 30% 60%,rgba(22,163,74,.15) 0%,transparent 60%); }
+    .login-green { position: absolute; bottom: -100px; right: -100px; width: 500px; height: 500px; border-radius: 50%; background: radial-gradient(rgba(22,163,74,.12),transparent 70%); }
+    .login-panel { position: relative; z-index: 2; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.1); border-radius: 20px; padding: 48px 40px; width: 100%; max-width: 420px; backdrop-filter: blur(20px); }
+    .login-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 32px; }
+    .login-brand img { height: 32px; filter: brightness(0) invert(1); }
+    .login-brand span { color: #fff; font-weight: 700; font-size: 15px; }
+    .view-badge { background: rgba(22,163,74,.25); color: #4ade80; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 20px; letter-spacing: .06em; text-transform: uppercase; border: 1px solid rgba(74,222,128,.3); }
+    .login-copy h1 { color: #fff; font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+    .login-copy p { color: rgba(255,255,255,.6); margin-bottom: 28px; line-height: 1.5; }
+    .login-form label { display: block; color: rgba(255,255,255,.7); font-size: 13px; font-weight: 500; margin-bottom: 6px; }
+    .login-form .field { margin-bottom: 16px; }
+    .login-form input { background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.12); color: #fff; width: 100%; }
+    .login-form input::placeholder { color: rgba(255,255,255,.3); }
+    .login-form input:focus { border-color: rgba(22,163,74,.6); box-shadow: 0 0 0 3px rgba(22,163,74,.15); }
+    .pw-wrap { position: relative; }
+    .pw-wrap input { padding-right: 36px; }
+    .pw-eye { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; color: rgba(255,255,255,.4); font-size: 15px; padding: 4px; }
+    .login-submit { width: 100%; background: var(--accent); color: #fff; padding: 12px; font-weight: 700; font-size: 15px; border-radius: 10px; transition: background .15s; margin-top: 4px; }
+    .login-submit:hover { background: var(--accent-dark); }
+    .login-error { color: #fca5a5; font-size: 13px; margin-top: 10px; }
+    .login-footer { margin-top: 32px; color: rgba(255,255,255,.3); font-size: 11px; }
+    .login-locations { position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%); display: flex; gap: 16px; }
+    .login-locations span { color: rgba(255,255,255,.25); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+    /* App */
+    .app-shell { display: flex; height: 100vh; overflow: hidden; }
+    .sidebar { width: var(--sidebar-w); background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; }
+    .app-brand { display: flex; align-items: center; gap: 10px; padding: 18px 16px 14px; border-bottom: 1px solid var(--border); }
+    .app-brand img { height: 26px; }
+    .app-brand strong { display: block; font-size: 13px; }
+    .app-brand span { font-size: 11px; color: var(--text-muted); }
+    .viewer-banner { margin: 12px 14px 0; background: color-mix(in srgb,var(--blue) 8%,transparent); border: 1px solid color-mix(in srgb,var(--blue) 20%,transparent); border-radius: 8px; padding: 8px 12px; }
+    .viewer-banner strong { display: block; font-size: 11px; color: var(--blue); margin-bottom: 2px; }
+    .viewer-banner small { font-size: 11px; color: var(--text-muted); line-height: 1.4; display: block; }
+    .nav-tabs { display: flex; flex-direction: column; gap: 2px; padding: 12px 8px; flex: 1; }
+    .nav-tab { background: none; border-radius: 8px; padding: 10px 12px; text-align: left; font-size: 13px; font-weight: 500; color: var(--text-muted); transition: background .12s, color .12s; }
+    .nav-tab:hover { background: #f0f2f5; color: var(--text); }
+    .nav-tab.active { background: color-mix(in srgb,var(--accent) 10%,transparent); color: var(--accent); font-weight: 600; }
+    .sidebar-panel { padding: 14px 14px 20px; border-top: 1px solid var(--border); font-size: 12px; }
+    .eyebrow { display: block; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); margin-bottom: 4px; }
+    .sidebar-panel strong { display: block; font-size: 12px; margin-bottom: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sign-out-btn { background: none; color: var(--text-muted); font-size: 12px; padding: 4px 0; }
+    .sign-out-btn:hover { color: var(--danger); }
+    .main { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+    .topbar { padding: 20px 28px 16px; border-bottom: 1px solid var(--border); background: var(--surface); display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-shrink: 0; }
+    .topbar .eyebrow { font-size: 11px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
+    .topbar h1 { font-size: 18px; font-weight: 700; }
+    .view { padding: 24px 28px; display: none; }
+    .view.active-view { display: block; }
+    .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
+    .metric { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; }
+    .metric span { display: block; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); margin-bottom: 6px; }
+    .metric strong { font-size: 26px; font-weight: 700; }
+    .metric.valid strong { color: var(--accent); }
+    .metric.expired strong { color: var(--danger); }
+    .metric.warn strong { color: var(--warn); }
+    .metric.missing strong { color: var(--text-muted); }
+    .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; margin-bottom: 20px; }
+    .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+    .panel-heading h3 { font-size: 14px; font-weight: 700; }
+    .panel-heading .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .panel-heading input, .panel-heading select { font-size: 12px; padding: 5px 9px; width: auto; }
+    .table-wrap { overflow-x: auto; }
+    .empty-state { padding: 32px; text-align: center; color: var(--text-muted); font-style: italic; }
+    .badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 20px; }
+    .badge-valid { background: color-mix(in srgb,var(--accent) 12%,transparent); color: var(--accent-dark); }
+    .badge-expiring { background: color-mix(in srgb,var(--warn) 12%,transparent); color: #92400e; }
+    .badge-expired { background: color-mix(in srgb,var(--danger) 10%,transparent); color: var(--danger); }
+    .badge-missing { background: #f3f4f6; color: var(--text-muted); }
+    .dl-btn { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 500; color: var(--blue); background: color-mix(in srgb,var(--blue) 8%,transparent); border: 1px solid color-mix(in srgb,var(--blue) 20%,transparent); border-radius: 6px; padding: 4px 10px; transition: background .12s; text-decoration: none; }
+    .dl-btn:hover { background: color-mix(in srgb,var(--blue) 14%,transparent); }
+    .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(8px); background: #1f2937; color: #fff; padding: 10px 20px; border-radius: 10px; font-size: 13px; opacity: 0; transition: opacity .2s, transform .2s; pointer-events: none; z-index: 9999; }
+    .toast.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+    .loading { display: flex; align-items: center; justify-content: center; padding: 48px; gap: 10px; color: var(--text-muted); }
+    .spinner { width: 20px; height: 20px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+
+<section id="loginView">
+  <div class="login-bg"></div>
+  <div class="login-shadow"></div>
+  <div class="login-green"></div>
+  <div class="login-panel">
+    <div class="login-brand">
+      <img src="assets/calo-logo.svg" alt="CALO" />
+      <span>UAE Kitchen Compliance</span>
+      <i style="flex:1"></i>
+      <span class="view-badge">View only</span>
+    </div>
+    <div class="login-copy">
+      <h1>Certificate Viewer</h1>
+      <p>Sign in to view BFS and OHC certificate status.</p>
+    </div>
+    <form id="loginForm" class="login-form">
+      <div class="field">
+        <label for="loginEmail">Email</label>
+        <input id="loginEmail" type="email" required placeholder="you@calo.app" autocomplete="username" />
+      </div>
+      <div class="field">
+        <label for="loginPassword">Password</label>
+        <div class="pw-wrap">
+          <input id="loginPassword" type="password" required placeholder="..." autocomplete="current-password" />
+          <button class="pw-eye" type="button" id="togglePw" tabindex="-1">&#128065;</button>
+        </div>
+      </div>
+      <p id="loginError" class="login-error hidden"></p>
+      <button class="login-submit" type="submit" id="loginBtn">Sign in</button>
+    </form>
+    <div class="login-footer">&#169; 2026 CALO Food Company &middot; UAE Kitchen Compliance Portal</div>
+  </div>
+  <div class="login-locations">
+    <span>Dubai</span><span>UAE</span><span>UAE Kitchen</span><span>CALO</span>
+  </div>
+</section>
+
+<div id="appShell" class="app-shell hidden">
+  <aside class="sidebar">
+    <div class="app-brand">
+      <img src="assets/calo-logo.svg" alt="CALO" />
+      <div><strong>UAE Kitchen</strong><span>Compliance Portal</span></div>
+    </div>
+    <div class="viewer-banner">
+      <strong>View-only access</strong>
+      <small>You can view and download certificates. Editing is disabled.</small>
+    </div>
+    <nav class="nav-tabs">
+      <button class="nav-tab active" data-view="bfs">&#129514; BFS Certificates</button>
+      <button class="nav-tab" data-view="ohc">&#127973; OHC Certificates</button>
+    </nav>
+    <div class="sidebar-panel">
+      <span class="eyebrow">Signed in as</span>
+      <strong id="signedInEmail">&#8212;</strong>
+      <button class="sign-out-btn" id="signOutBtn">Sign out</button>
+    </div>
+  </aside>
+  <div class="main">
+    <div class="topbar">
+      <div>
+        <div class="eyebrow">UAE HR &amp; OPS</div>
+        <h1>UAE Kitchen &#8211; Compliance Portal</h1>
+      </div>
+    </div>
+    <div class="view active-view" id="bfs">
+      <div id="bfsMetrics" class="metric-grid"></div>
+      <div class="panel">
+        <div class="panel-heading">
+          <h3>Basic Food Safety Register</h3>
+          <div class="controls">
+            <input id="bfsSearch" type="search" placeholder="Search name or ID..." style="width:180px" />
+            <select id="bfsDept"><option value="">All departments</option></select>
+            <select id="bfsStat"><option value="">All statuses</option><option value="valid">Valid</option><option value="expiring">Expiring soon</option><option value="expired">Expired</option><option value="missing">Missing</option></select>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <div id="bfsLoading" class="loading"><div class="spinner"></div>&nbsp;Loading...</div>
+          <table id="bfsTable" class="hidden"><thead><tr><th>Name</th><th>ID</th><th>Dept</th><th>BFS Status</th><th>Issue Date</th><th>Expiry Date</th><th>Certificate</th></tr></thead><tbody id="bfsTbody"></tbody></table>
+          <div id="bfsEmpty" class="empty-state hidden">No employees match the filter.</div>
+        </div>
+      </div>
+    </div>
+    <div class="view" id="ohc">
+      <div id="ohcMetrics" class="metric-grid"></div>
+      <div class="panel">
+        <div class="panel-heading">
+          <h3>Occupational Health Card Register</h3>
+          <div class="controls">
+            <input id="ohcSearch" type="search" placeholder="Search name or ID..." style="width:180px" />
+            <select id="ohcDept"><option value="">All departments</option></select>
+            <select id="ohcStat"><option value="">All statuses</option><option value="valid">Valid</option><option value="expiring">Expiring soon</option><option value="expired">Expired</option><option value="missing">Missing</option></select>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <div id="ohcLoading" class="loading"><div class="spinner"></div>&nbsp;Loading...</div>
+          <table id="ohcTable" class="hidden"><thead><tr><th>Name</th><th>ID</th><th>Dept</th><th>OHC Status</th><th>Issue Date</th><th>Expiry Date</th><th>Certificate</th></tr></thead><tbody id="ohcTbody"></tbody></table>
+          <div id="ohcEmpty" class="empty-state hidden">No employees match the filter.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="toast" class="toast"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+const SUPABASE_URL  = "https://iflquskysqchhbywvmow.supabase.co";
+const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlmbHF1c2t5c3FjaGhieXd2bW93Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE4NjM3ODIsImV4cCI6MjA5NzQzOTc4Mn0.FFcd80AqZ8hpyi-Bs_rPnCNZNp075YqBYM1yAYeyGUw";
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+const REMINDER_DAYS = 30;
+let employees = [], session = null;
+
+const loginView     = document.getElementById("loginView");
+const appShell      = document.getElementById("appShell");
+const loginError    = document.getElementById("loginError");
+const loginBtn      = document.getElementById("loginBtn");
+const signedInEmail = document.getElementById("signedInEmail");
+const toast         = document.getElementById("toast");
+
+document.getElementById("loginForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const form = e.currentTarget;
+  loginError.classList.add("hidden");
+  loginBtn.textContent = "Signing in..."; loginBtn.disabled = true;
+  const { data, error } = await sb.auth.signInWithPassword({
+    email: document.getElementById("loginEmail").value.trim().toLowerCase(),
+    password: document.getElementById("loginPassword").value,
+  });
+  loginBtn.textContent = "Sign in"; loginBtn.disabled = false;
+  if (error) { loginError.textContent = error.message; loginError.classList.remove("hidden"); return; }
+  const user = data.session?.user ?? data.user;
+  if (user) await onSignIn(user);
+});
+
+document.getElementById("togglePw").addEventListener("click", () => {
+  const pw = document.getElementById("loginPassword");
+  pw.type = pw.type === "password" ? "text" : "password";
+});
+
+document.getElementById("signOutBtn").addEventListener("click", async () => {
+  await sb.auth.signOut();
+  session = null; employees = [];
+  loginView.classList.remove("hidden"); appShell.classList.add("hidden");
+});
+
+sb.auth.onAuthStateChange(async (event, sbSession) => {
+  if ((event === "SIGNED_IN" || event === "INITIAL_SESSION") && sbSession?.user) {
+    if (!session || session.id !== sbSession.user.id) await onSignIn(sbSession.user);
+  } else if (event === "SIGNED_OUT") {
+    session = null; employees = [];
+    loginView.classList.remove("hidden"); appShell.classList.add("hidden");
+  }
+});
+
+async function onSignIn(user) {
+  session = user;
+  loginView.classList.add("hidden"); appShell.classList.remove("hidden");
+  signedInEmail.textContent = user.email;
+  await loadData();
+  renderAll();
+}
+
+async function loadData() {
+  const [{ data: emps, error: e1 }, { data: certs, error: e2 }] = await Promise.all([
+    sb.from("employees").select("*").order("name", { ascending: true }),
+    sb.from("certificates").select("id,employee_id,type,issue_date,expiry_date,file_name,file_path"),
+  ]);
+  if (e1 || e2) { showToast("Failed to load data."); return; }
+  employees = (emps || []).map(emp => {
+    const ec  = (certs || []).filter(c => c.employee_id === emp.id);
+    const bfs = ec.find(c => c.type === "bfs") || {};
+    const ohc = ec.find(c => c.type === "ohc") || {};
+    return {
+      id: emp.id, name: emp.name, employeeId: emp.employee_id, department: emp.department,
+      bfs: { issueDate: bfs.issue_date || "", expiryDate: bfs.expiry_date || "", filePath: bfs.file_path || "", fileName: bfs.file_name || "" },
+      ohc: { issueDate: ohc.issue_date || "", expiryDate: ohc.expiry_date || "", filePath: ohc.file_path || "", fileName: ohc.file_name || "" },
+    };
+  });
+}
+
+document.querySelectorAll(".nav-tab").forEach(tab => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".nav-tab").forEach(t => t.classList.remove("active"));
+    document.querySelectorAll(".view").forEach(v => v.classList.remove("active-view"));
+    tab.classList.add("active");
+    document.getElementById(tab.dataset.view).classList.add("active-view");
+  });
+});
+
+["bfs","ohc"].forEach(type => {
+  document.getElementById(type + "Search").addEventListener("input", () => renderTable(type));
+  document.getElementById(type + "Dept").addEventListener("change", () => renderTable(type));
+  document.getElementById(type + "Stat").addEventListener("change", () => renderTable(type));
+});
+
+function certStatus(cert) {
+  if (!cert.expiryDate) return "missing";
+  const today = new Date(); today.setHours(0,0,0,0);
+  const expiry = new Date(cert.expiryDate + "T00:00:00");
+  const days = Math.floor((expiry - today) / 86400000);
+  if (days < 0) return "expired";
+  if (days <= REMINDER_DAYS) return "expiring";
+  return "valid";
+}
+
+function statusBadge(s) {
+  const m = { valid: ["Valid","badge-valid"], expiring: ["Expiring","badge-expiring"], expired: ["Expired","badge-expired"], missing: ["Missing","badge-missing"] };
+  const [label, cls] = m[s] || ["--","badge-missing"];
+  return '<span class="badge ' + cls + '">' + label + '</span>';
+}
+
+function fmtDate(d) {
+  if (!d) return '<span class="muted">--</span>';
+  const parts = d.split("-");
+  return parts[2] + "/" + parts[1] + "/" + parts[0];
+}
+
+function dlBtn(cert) {
+  if (!cert.filePath) return '<span class="muted">--</span>';
+  const { data } = sb.storage.from("certificates").getPublicUrl(cert.filePath);
+  if (!data?.publicUrl) return '<span class="muted">--</span>';
+  return '<a class="dl-btn" href="' + data.publicUrl + '" target="_blank" rel="noopener" download="' + (cert.fileName || "certificate") + '"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v9M4 8l4 4 4-4"/><path d="M2 14h12"/></svg> Download</a>';
+}
+
+function renderAll() { renderTable("bfs"); renderTable("ohc"); }
+
+function renderTable(type) {
+  const search  = document.getElementById(type + "Search").value.toLowerCase();
+  const deptSel = document.getElementById(type + "Dept").value;
+  const statSel = document.getElementById(type + "Stat").value;
+  const loading = document.getElementById(type + "Loading");
+  const table   = document.getElementById(type + "Table");
+  const tbody   = document.getElementById(type + "Tbody");
+  const empty   = document.getElementById(type + "Empty");
+  const metrics = document.getElementById(type + "Metrics");
+  const deptEl  = document.getElementById(type + "Dept");
+
+  loading.classList.add("hidden");
+  table.classList.remove("hidden");
+
+  const depts = [...new Set(employees.map(e => e.department).filter(Boolean))].sort();
+  const curDept = deptEl.value;
+  deptEl.innerHTML = '<option value="">All departments</option>' + depts.map(d => '<option value="' + d + '"' + (d === curDept ? ' selected' : '') + '>' + d + '</option>').join("");
+
+  const counts = { valid: 0, expiring: 0, expired: 0, missing: 0 };
+  employees.forEach(emp => counts[certStatus(emp[type])]++);
+  metrics.innerHTML = [
+    ["Valid", counts.valid, "valid"],
+    ["Expiring soon", counts.expiring, "warn"],
+    ["Expired", counts.expired, "expired"],
+    ["Missing", counts.missing, "missing"],
+  ].map(([label, val, cls]) => '<div class="metric ' + cls + '"><span>' + label + '</span><strong>' + val + '</strong></div>').join("");
+
+  const filtered = employees.filter(emp => {
+    const status = certStatus(emp[type]);
+    return (!search || emp.name.toLowerCase().includes(search) || emp.employeeId.toLowerCase().includes(search))
+        && (!deptSel || emp.department === deptSel)
+        && (!statSel || status === statSel);
+  });
+
+  if (filtered.length === 0) { table.classList.add("hidden"); empty.classList.remove("hidden"); return; }
+  empty.classList.add("hidden");
+  tbody.innerHTML = filtered.map(emp => {
+    const cert = emp[type];
+    return "<tr><td><strong>" + esc(emp.name) + "</strong></td><td class='muted'>" + esc(emp.employeeId) + "</td><td>" + esc(emp.department) + "</td><td>" + statusBadge(certStatus(cert)) + "</td><td>" + fmtDate(cert.issueDate) + "</td><td>" + fmtDate(cert.expiryDate) + "</td><td>" + dlBtn(cert) + "</td></tr>";
+  }).join("");
+}
+
+function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+let toastTimer;
+function showToast(msg) {
+  toast.textContent = msg; toast.classList.add("visible");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.remove("visible"), 3500);
+}
+
+loginView.classList.remove("hidden");
+appShell.classList.add("hidden");
+</script>
+</body>
+</html>
