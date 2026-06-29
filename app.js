@@ -356,13 +356,15 @@ function initSection(type) {
   // CSV bulk employee upload
   bulkUploadForm.addEventListener("submit", async e => {
     e.preventDefault(); if (!isEditor) return;
-    const file = e.currentTarget.elements.csvFile.files[0]; if (!file) return;
-    const btn = e.currentTarget.querySelector("button[type=submit]");
+    // Capture form refs immediately -- e.currentTarget becomes null after first await
+    const form = e.currentTarget;
+    const file = form.elements.csvFile.files[0]; if (!file) return;
+    const btn  = form.querySelector("button[type=submit]");
     btn.disabled = true; btn.textContent = "Importing…";
     showProgressToast("Reading file…", 0);
     try {
       const result = await importFromCsv(await file.text());
-      e.currentTarget.reset(); renderAll();
+      form.reset(); renderAll();
       hideProgressToast();
       showToast(`✅ Done: ${result.added} added, ${result.updated} updated, ${result.skipped} skipped.`);
     } catch(err) {
