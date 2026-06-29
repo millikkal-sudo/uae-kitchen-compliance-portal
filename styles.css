@@ -428,3 +428,60 @@ tr:hover td { background: #fafbfc; }
 }
 .login-submit-btn:hover:not(:disabled) { background: var(--accent-dark); }
 .login-submit-btn:disabled { opacity: .6; cursor: not-allowed; }
+
+/* ── Progress toast ──────────────────────────────────────────────── */
+.progress-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: #1f2937;
+  color: #fff;
+  padding: 14px 20px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  opacity: 0;
+  transition: opacity .2s, transform .2s;
+  pointer-events: none;
+  z-index: 9999;
+  min-width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.progress-toast.visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+.progress-toast-msg { font-size: 13px; }
+.progress-bar-wrap {
+  background: rgba(255,255,255,.15);
+  border-radius: 4px;
+  height: 6px;
+  overflow: hidden;
+}
+.progress-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 4px;
+  transition: width .3s ease;
+  width: 0%;
+}
+.progress-toast-pct {
+  font-size: 11px;
+  color: rgba(255,255,255,.6);
+  text-align: right;
+}
+
+/* ── Bulk match type label ────────────────────────────────────────── */
+.match-how {
+  font-size: 11px;
+  font-weight: 600;
+  background: #f0fdf4;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
+  border-radius: 5px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
