@@ -43,7 +43,10 @@ document.getElementById("loginForm").addEventListener("submit", async e => {
   const { data, error } = await sb.auth.signInWithPassword({ email, password });
   btn.textContent = "Sign in"; btn.disabled = false;
   if (error) { errEl.textContent = error.message; errEl.classList.remove("hidden"); return; }
-  await onSignIn(data.user);
+  // Use session.user (reliable in Supabase JS v2) with data.user as fallback.
+  // onAuthStateChange also fires SIGNED_IN — the id-guard inside prevents double-loading.
+  const user = data.session?.user ?? data.user;
+  if (user) await onSignIn(user);
 });
 
 document.getElementById("togglePw").addEventListener("click", () => {
