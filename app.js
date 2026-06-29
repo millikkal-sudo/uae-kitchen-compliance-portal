@@ -785,23 +785,38 @@ async function importFromCsv(text) {
   const total = toInsert.length + toUpdate.length;
   if (total === 0) return { added: 0, updated: 0, skipped };
 
-  // ── Step 2: Batch upsert employees (single DB call) ──────────────────────────
+  // ── Step 2: Batch upsert employees on employee_id (text code) ──────────────
+  // Conflict key is employee_id (the unique text code e.g. FTE1244), NOT id (UUID).
+  // We select back the real DB UUIDs so cert rows use the correct FK.
   showProgressToast(`Writing ${total} employees to database…`, 30);
   const allEmpRows = [...toInsert, ...toUpdate];
-  const BATCH = 200; // Supabase handles up to ~500 rows per upsert safely
+  const BATCH = 200;
+  const empIdToDbId = {}; // maps employee_id text code → real DB UUID
   for (let i = 0; i < allEmpRows.length; i += BATCH) {
     const chunk = allEmpRows.slice(i, i + BATCH);
     const pct = 30 + Math.round((i / allEmpRows.length) * 40);
     showProgressToast(`Writing employees ${i + 1}–${Math.min(i + BATCH, allEmpRows.length)} of ${allEmpRows.length}…`, pct);
-    const { error } = await sb.from("employees").upsert(chunk, { onConflict: "id" });
+    const { data: upserted, error } = await sb.from("employees")
+      .upsert(chunk, { onConflict: "employee_id" })
+      .select("id, employee_id");
     if (error) throw new Error(`Employee upsert failed: ${error.message}`);
+    // Build lookup: text code → real DB UUID
+    (upserted || []).forEach(r => { empIdToDbId[r.employee_id.toLowerCase()] = r.id; });
   }
 
-  // ── Step 3: Batch upsert certificates (single DB call) ───────────────────────
+  // ── Step 3: Batch upsert certificates using real DB employee UUIDs ───────────
   if (certRows.length > 0) {
-    showProgressToast(`Writing ${certRows.length} certificate records…`, 75);
-    for (let i = 0; i < certRows.length; i += BATCH) {
-      const chunk = certRows.slice(i, i + BATCH);
+    // Replace local UUIDs with real DB UUIDs returned from the employee upsert
+    const resolvedCertRows = certRows.map(cr => {
+      const empTextId = allEmpRows.find(e => e.id === cr.employee_id)?.employee_id;
+      const realDbId  = empTextId ? empIdToDbId[empTextId.toLowerCase()] : null;
+      if (!realDbId) return null;
+      return { ...cr, employee_id: realDbId };
+    }).filter(Boolean);
+
+    showProgressToast(`Writing ${resolvedCertRows.length} certificate records…`, 75);
+    for (let i = 0; i < resolvedCertRows.length; i += BATCH) {
+      const chunk = resolvedCertRows.slice(i, i + BATCH);
       const { error } = await sb.from("certificates").upsert(chunk, { onConflict: "employee_id,type" });
       if (error) throw new Error(`Certificate upsert failed: ${error.message}`);
     }
