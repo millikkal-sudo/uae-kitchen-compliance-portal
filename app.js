@@ -164,10 +164,12 @@ async function upsertCertificate(empStateId, type, cert, existingCertId) {
 }
 
 // Upload file to Supabase Storage — returns { filePath, publicUrl } or throws
-async function uploadFileToStorage(empId, type, file) {
+// empCode = the text employee ID like "CK-1024" — used as folder name in storage
+// so paths are stable and human-readable regardless of DB UUID changes
+async function uploadFileToStorage(empCode, type, file) {
   if (file.size > MAX_FILE_BYTES) throw new Error(`File too large (max 5 MB). "${file.name}" is ${(file.size/1024/1024).toFixed(1)} MB.`);
-  const ext      = file.name.split(".").pop();
-  const filePath = `${empId}/${type}/${Date.now()}.${ext}`;
+  const ext      = file.name.split(".").pop().toLowerCase();
+  const filePath = `${empCode}/${type}/${Date.now()}.${ext}`;
   const { error } = await sb.storage.from(SUPABASE_BUCKET).upload(filePath, file, { upsert: true, contentType: file.type });
   if (error) throw error;
   const { data: { publicUrl } } = sb.storage.from(SUPABASE_BUCKET).getPublicUrl(filePath);
@@ -191,7 +193,8 @@ function setSyncState(s) {
 }
 
 // ── readCertFile — reads File object, uploads to Storage, returns cert file obj ─
-async function readCertFile(file, empId, type) {
+// empCode = text employee ID like "CK-1024" used as storage folder
+async function readCertFile(file, empCode, type) {
   if (!file) return null;
   if (file.type !== "application/pdf" && !file.type.startsWith("image/")) { showToast("Upload a PDF or image."); throw new Error("bad type"); }
   if (file.size > MAX_FILE_BYTES) { showToast(`File too large — max 5 MB.`); throw new Error("too large"); }
@@ -199,16 +202,11 @@ async function readCertFile(file, empId, type) {
   // Always get a local dataUrl for immediate preview
   const dataUrl = await toDataUrl(file);
 
-  // If editor and online, also upload to Supabase Storage
+  // Upload to Supabase Storage using the text employee code as folder
   let filePath = null;
-  if (isEditor && empId) {
-    try {
-      const result = await uploadFileToStorage(empId, type, file);
-      filePath = result.filePath;
-    } catch(err) {
-      console.warn("Storage upload failed, keeping local preview only:", err.message);
-      showToast(`Storage upload failed: ${err.message}`);
-    }
+  if (isEditor && empCode) {
+    const result = await uploadFileToStorage(empCode, type, file);
+    filePath = result.filePath;
   }
   return { name: file.name, type: file.type, size: file.size, dataUrl, filePath, uploadedAt: new Date().toISOString() };
 }
@@ -267,7 +265,7 @@ certUploadModalForm.addEventListener("submit", async e => {
   try {
     // Delete old storage file if replacing
     if (file && prev.file?.filePath) await deleteStorageFile(prev.file.filePath);
-    const uploaded = file ? await readCertFile(file, emp.id, type) : prev.file || null;
+    const uploaded = file ? await readCertFile(file, emp.employeeId, type) : prev.file || null;
     const certData = {
       issueDate:  d.issueDate  || prev.issueDate  || "",
       expiryDate: d.expiryDate || prev.expiryDate || (d.issueDate ? calcExpiry(d.issueDate, CERTIFICATES[type].validYears) : ""),
@@ -384,12 +382,26 @@ function initSection(type) {
   });
   bulkCertConfirm.addEventListener("click", async () => {
     if (!isEditor) return;
+    if (!bulkRows.length) { showToast("No files selected."); return; }
+    const matchedCount = bulkRows.filter(r => r.match).length;
+    if (!matchedCount) { showToast("No files matched any employee ID. Check filenames match Employee IDs e.g. CK-1024.pdf"); return; }
+
+    // Disable button during upload
+    const confirmBtn = document.getElementById(`bulkCertConfirm${sfx}`);
+    confirmBtn.disabled = true; confirmBtn.textContent = "Uploading…";
     setSyncState("syncing");
     try {
       const count = await applyBulkFiles(bulkRows, type);
+      hideProgressToast();
       setSyncState("idle"); renderAll();
-      showToast(`${count} ${CERTIFICATES[type].label} file(s) attached.`);
-    } catch(err) { setSyncState("error"); showToast(`Bulk attach failed: ${err.message}`); }
+      showToast(count > 0 ? `✅ ${count} ${CERTIFICATES[type].label} file(s) attached successfully.` : `⚠️ No files were attached — check console for errors.`);
+    } catch(err) {
+      hideProgressToast();
+      setSyncState("error");
+      showToast(`❌ Bulk attach failed: ${err.message}`);
+    } finally {
+      confirmBtn.disabled = false; confirmBtn.textContent = "Attach Files";
+    }
     bulkCertInput.value = ""; bulkCertPreview.classList.add("hidden"); bulkCertActions.classList.add("hidden"); bulkRows = [];
   });
   bulkCertClear.addEventListener("click", () => {
@@ -410,7 +422,7 @@ function initSection(type) {
     setSyncState("syncing");
     try {
       if (file && prev.file?.filePath) await deleteStorageFile(prev.file.filePath);
-      const uploaded = file ? await readCertFile(file, emp.id, type) : prev.file || null;
+      const uploaded = file ? await readCertFile(file, emp.employeeId, type) : prev.file || null;
       const certData = { issueDate: d.issueDate, expiryDate: d.expiryDate || calcExpiry(d.issueDate, CERTIFICATES[type].validYears), file: uploaded };
       emp.certificates[type] = certData;
       // FIX BUG1: update _certIds after upsert
@@ -508,38 +520,89 @@ document.body.addEventListener("click", e => {
 // ── Bulk cert file matching ────────────────────────────────────────────────────
 function buildPreview(files) { return Array.from(files).map(f => ({ file: f, match: matchFile(f.name) })); }
 function matchFile(fileName) {
-  const base = fileName.replace(/\.[^.]+$/, "").trim().toLowerCase();
-  const norm = s => s.toLowerCase().replace(/[^a-z0-9]/g, "");
-  let emp = state.employees.find(e => e.employeeId.trim().toLowerCase() === base);
-  if (!emp) emp = state.employees.find(e => norm(e.name) === norm(base));
-  return emp ? { employee: emp } : null;
+  const base = fileName.replace(/\.[^.]+$/, "").trim();
+  const norm  = s => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const lower = base.toLowerCase();
+  const nb    = norm(base);
+
+  // 1. Exact employee ID match  (CK-1024.pdf)
+  let emp = state.employees.find(e => e.employeeId.trim().toLowerCase() === lower);
+  if (emp) return { employee: emp, how: "ID" };
+
+  // 2. Exact full name match  (Ahmed Mohammed.pdf)
+  emp = state.employees.find(e => e.name.trim().toLowerCase() === lower);
+  if (emp) return { employee: emp, how: "name" };
+
+  // 3. Normalised full name (ignores spaces/punctuation)  (AhmedMohammed.pdf)
+  emp = state.employees.find(e => norm(e.name) === nb);
+  if (emp) return { employee: emp, how: "name" };
+
+  // 4. First name only — file base matches first word of employee name  (Ahmed.pdf)
+  emp = state.employees.find(e => e.name.trim().toLowerCase().split(/\s+/)[0] === lower);
+  if (emp) return { employee: emp, how: "first name" };
+
+  // 5. Employee name STARTS WITH file base  (Ajay.pdf → Ajay Kumar)
+  emp = state.employees.find(e => norm(e.name).startsWith(nb) && nb.length >= 4);
+  if (emp) return { employee: emp, how: "partial" };
+
+  // 6. File base is contained within employee name  (AjayKumar.pdf → Ajay Kumar)
+  emp = state.employees.find(e => norm(e.name).includes(nb) && nb.length >= 4);
+  if (emp) return { employee: emp, how: "partial" };
+
+  return null;
 }
 function renderPreview(rows, el, type) {
   const matched = rows.filter(r => r.match).length;
   let html = `<p class="bulk-summary">${matched} of ${rows.length} file(s) matched · <strong>${CERTIFICATES[type].label}</strong></p>`;
-  html += `<div class="table-wrap"><table><thead><tr><th>File</th><th>Matched Employee</th></tr></thead><tbody>`;
-  rows.forEach(r => { html += `<tr><td>${escHtml(r.file.name)}</td><td>${r.match ? `<span class="status-valid">${escHtml(r.match.employee.name)}</span>` : `<span class="status-expired">No match</span>`}</td></tr>`; });
+  html += `<div class="table-wrap"><table><thead><tr><th>File</th><th>Matched Employee</th><th>Match Type</th></tr></thead><tbody>`;
+  rows.forEach(r => {
+    const matchCell = r.match
+      ? `<span class="status-valid">${escHtml(r.match.employee.name)}</span>`
+      : `<span class="status-expired">No match</span>`;
+    const howCell = r.match
+      ? `<span class="match-how">${escHtml(r.match.how)}</span>`
+      : `<span class="muted">—</span>`;
+    html += `<tr><td>${escHtml(r.file.name)}</td><td>${matchCell}</td><td>${howCell}</td></tr>`;
+  });
   html += `</tbody></table></div>`;
   el.innerHTML = html; el.classList.remove("hidden");
 }
 async function applyBulkFiles(rows, type) {
-  let count = 0;
-  for (const r of rows) {
-    if (!r.match) continue;
-    const emp = state.employees.find(e => e.id === r.match.employee.id); if (!emp) continue;
+  const matched = rows.filter(r => r.match);
+  if (!matched.length) { showToast("No files matched any employee ID."); return 0; }
+
+  let count = 0, failed = 0;
+  for (let i = 0; i < matched.length; i++) {
+    const r   = matched[i];
+    const emp = state.employees.find(e => e.id === r.match.employee.id);
+    if (!emp) continue;
+
+    const pct = Math.round(((i) / matched.length) * 90);
+    showProgressToast(`Uploading ${i + 1} of ${matched.length}: ${r.file.name}`, pct);
+
     try {
-      // Delete old file if replacing
+      // Delete old storage file if replacing
       if (emp.certificates[type]?.file?.filePath) await deleteStorageFile(emp.certificates[type].file.filePath);
-      const fileObj  = await readCertFile(r.file, emp.id, type);
-      const certData = { ...(emp.certificates[type]||{}), file: fileObj };
+
+      // Use employeeId (text code) as the storage folder — not the DB UUID
+      const fileObj  = await readCertFile(r.file, emp.employeeId, type);
+      const certData = { ...(emp.certificates[type] || {}), file: fileObj };
       emp.certificates[type] = certData;
-      // FIX BUG2: update _certIds after each upsert
+
+      // Upsert the cert record — upsertCertificate resolves the real DB id internally
       const certId = await upsertCertificate(emp.id, type, certData, emp._certIds?.[type]);
       if (!emp._certIds) emp._certIds = {};
       emp._certIds[type] = certId;
       count++;
-    } catch(err) { console.error(`Failed to attach ${r.file.name}:`, err.message); }
+    } catch(err) {
+      failed++;
+      console.error(`Failed to attach ${r.file.name}:`, err.message);
+      showToast(`❌ Failed: ${r.file.name} — ${err.message}`);
+      await new Promise(r => setTimeout(r, 1500)); // show error briefly
+    }
   }
+
+  showProgressToast("Saving to database…", 95);
   return count;
 }
 
