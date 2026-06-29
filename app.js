@@ -790,7 +790,12 @@ async function importFromCsv(text) {
   // Conflict key is employee_id (the unique text code e.g. FTE1244), NOT id (UUID).
   // We select back the real DB UUIDs so cert rows use the correct FK.
   showProgressToast(`Writing ${total} employees to database…`, 30);
-  const allEmpRows = [...toInsert, ...toUpdate];
+  // Deduplicate by employee_id — if the CSV has two rows with the same ID,
+  // Postgres throws "ON CONFLICT DO UPDATE command cannot affect row a second time".
+  // Keep the last occurrence so later CSV rows win (same behaviour as a spreadsheet).
+  const empRowMap = new Map();
+  [...toInsert, ...toUpdate].forEach(r => empRowMap.set(r.employee_id.toLowerCase(), r));
+  const allEmpRows = [...empRowMap.values()];
   const BATCH = 200;
   const empIdToDbId = {}; // maps employee_id text code → real DB UUID
   for (let i = 0; i < allEmpRows.length; i += BATCH) {
