@@ -1,4 +1,4 @@
-// ── Supabase ──────────────────────────────────────────────────────────────────
+—// ── Supabase ──────────────────────────────────────────────────────────────────
 const SUPABASE_URL  = "https://iflquskysqchhbywvmow.supabase.co";
 const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlmbHF1c2t5c3FjaGhieXd2bW93Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE4NjM3ODIsImV4cCI6MjA5NzQzOTc4Mn0.FFcd80AqZ8hpyi-Bs_rPnCNZNp075YqBYM1yAYeyGUw";
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
@@ -758,10 +758,12 @@ async function importFromCsv(text) {
   const idx  = k => hdrs.indexOf(k);
   const dataRows = allRows.slice(1);
 
-  // ── Step 1: Parse CSV into employee + cert records ──────────────────────────
+  // ── Step 1: Parse CSV rows, keyed by employee_id to auto-deduplicate ─────────
+  // Using a Map ensures duplicate employee_id rows in the CSV don't cause
+  // "ON CONFLICT DO UPDATE command cannot affect row a second time" in Postgres.
   showProgressToast(`Parsing ${dataRows.length} rows…`, 5);
-  const toInsert = [], toUpdate = [], certRows = [];
-  let skipped = 0;
+  const empMap  = new Map(); // employee_id (lower) → { empRow, bfsDate, ohcDate, isNew }
+  let skipped = 0, addedCount = 0, updatedCount = 0;
 
   for (const raw of dataRows) {
     const row = [...raw]; while (row.length < hdrs.length) row.push("");
@@ -772,69 +774,61 @@ async function importFromCsv(text) {
     const bfsDate = parseDate(get("bfsissuedate"));
     const ohcDate = parseDate(get("ohcissuedate"));
     const existing = state.employees.find(e => e.employeeId.toLowerCase() === empId.toLowerCase());
-    const id = existing?.id || crypto.randomUUID();
-
     const createdAt = existing?.createdAt || new Date().toISOString();
-    const empRow = { id, name, employee_id: empId, department: dept, created_at: createdAt, updated_at: new Date().toISOString() };
-    if (existing) toUpdate.push(empRow);
-    else          toInsert.push(empRow);
 
-    if (bfsDate) certRows.push({ employee_id: id, type: "bfs", issue_date: bfsDate, expiry_date: calcExpiry(bfsDate, 2), updated_at: new Date().toISOString() });
-    if (ohcDate) certRows.push({ employee_id: id, type: "ohc", issue_date: ohcDate, expiry_date: calcExpiry(ohcDate, 1), updated_at: new Date().toISOString() });
+    // No `id` in payload — Postgres owns the UUID, conflict resolved on employee_id
+    const empRow = { name, employee_id: empId, department: dept, created_at: createdAt, updated_at: new Date().toISOString() };
+    empMap.set(empId.toLowerCase(), { empRow, bfsDate, ohcDate, isNew: !existing });
   }
 
-  const total = toInsert.length + toUpdate.length;
-  if (total === 0) return { added: 0, updated: 0, skipped };
+  const allEntries = [...empMap.values()];
+  if (allEntries.length === 0) return { added: 0, updated: 0, skipped };
 
-  // ── Step 2: Batch upsert employees on employee_id (text code) ──────────────
-  // Conflict key is employee_id (the unique text code e.g. FTE1244), NOT id (UUID).
-  // We select back the real DB UUIDs so cert rows use the correct FK.
-  showProgressToast(`Writing ${total} employees to database…`, 30);
-  // Deduplicate by employee_id — if the CSV has two rows with the same ID,
-  // Postgres throws "ON CONFLICT DO UPDATE command cannot affect row a second time".
-  // Keep the last occurrence so later CSV rows win (same behaviour as a spreadsheet).
-  const empRowMap = new Map();
-  [...toInsert, ...toUpdate].forEach(r => empRowMap.set(r.employee_id.toLowerCase(), r));
-  const allEmpRows = [...empRowMap.values()];
+  allEntries.forEach(e => e.isNew ? addedCount++ : updatedCount++);
+
+  // ── Step 2: Batch upsert employees, get back real DB UUIDs ───────────────────
   const BATCH = 200;
-  const empIdToDbId = {}; // maps employee_id text code → real DB UUID
+  const empIdToDbId = {}; // employee_id text (lower) → real Postgres UUID
+  const allEmpRows = allEntries.map(e => e.empRow);
+
+  showProgressToast(`Writing ${allEmpRows.length} employees to database…`, 30);
   for (let i = 0; i < allEmpRows.length; i += BATCH) {
     const chunk = allEmpRows.slice(i, i + BATCH);
-    const pct = 30 + Math.round((i / allEmpRows.length) * 40);
+    const pct   = 30 + Math.round((i / allEmpRows.length) * 40);
     showProgressToast(`Writing employees ${i + 1}–${Math.min(i + BATCH, allEmpRows.length)} of ${allEmpRows.length}…`, pct);
     const { data: upserted, error } = await sb.from("employees")
       .upsert(chunk, { onConflict: "employee_id" })
       .select("id, employee_id");
     if (error) throw new Error(`Employee upsert failed: ${error.message}`);
-    // Build lookup: text code → real DB UUID
     (upserted || []).forEach(r => { empIdToDbId[r.employee_id.toLowerCase()] = r.id; });
   }
 
-  // ── Step 3: Batch upsert certificates using real DB employee UUIDs ───────────
-  if (certRows.length > 0) {
-    // Replace local UUIDs with real DB UUIDs returned from the employee upsert
-    const resolvedCertRows = certRows.map(cr => {
-      const empTextId = allEmpRows.find(e => e.id === cr.employee_id)?.employee_id;
-      const realDbId  = empTextId ? empIdToDbId[empTextId.toLowerCase()] : null;
-      if (!realDbId) return null;
-      return { ...cr, employee_id: realDbId };
-    }).filter(Boolean);
+  // ── Step 3: Build cert rows using real DB UUIDs, then upsert ─────────────────
+  const certRows = [];
+  for (const { empRow, bfsDate, ohcDate } of allEntries) {
+    const realId = empIdToDbId[empRow.employee_id.toLowerCase()];
+    if (!realId) continue;
+    if (bfsDate) certRows.push({ employee_id: realId, type: "bfs", issue_date: bfsDate, expiry_date: calcExpiry(bfsDate, 2), updated_at: new Date().toISOString() });
+    if (ohcDate) certRows.push({ employee_id: realId, type: "ohc", issue_date: ohcDate, expiry_date: calcExpiry(ohcDate, 1), updated_at: new Date().toISOString() });
+  }
 
-    showProgressToast(`Writing ${resolvedCertRows.length} certificate records…`, 75);
-    for (let i = 0; i < resolvedCertRows.length; i += BATCH) {
-      const chunk = resolvedCertRows.slice(i, i + BATCH);
+  if (certRows.length > 0) {
+    showProgressToast(`Writing ${certRows.length} certificate records…`, 75);
+    for (let i = 0; i < certRows.length; i += BATCH) {
+      const chunk = certRows.slice(i, i + BATCH);
       const { error } = await sb.from("certificates").upsert(chunk, { onConflict: "employee_id,type" });
       if (error) throw new Error(`Certificate upsert failed: ${error.message}`);
     }
   }
 
-  // ── Step 4: Reload state from DB (source of truth) ───────────────────────────
+  // ── Step 4: Reload state from DB ─────────────────────────────────────────────
   showProgressToast("Reloading data…", 90);
   await loadFromSupabase();
   setSyncState("idle");
 
-  return { added: toInsert.length, updated: toUpdate.length, skipped };
+  return { added: addedCount, updated: updatedCount, skipped };
 }
+
 function downloadTemplate(type) {
   const cols = type==="bfs" ? ["employeeId","name","department","bfsIssueDate"] : ["employeeId","name","department","ohcIssueDate"];
   const ex   = type==="bfs" ? ["CK-1001","Sample Employee","Kitchen","2026-01-15"] : ["CK-1001","Sample Employee","Kitchen","2026-03-01"];
