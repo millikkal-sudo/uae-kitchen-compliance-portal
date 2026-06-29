@@ -762,7 +762,7 @@ async function importFromCsv(text) {
   // Using a Map ensures duplicate employee_id rows in the CSV don't cause
   // "ON CONFLICT DO UPDATE command cannot affect row a second time" in Postgres.
   showProgressToast(`Parsing ${dataRows.length} rows…`, 5);
-  const empMap  = new Map(); // employee_id (lower) → { empRow, bfsDate, ohcDate, isNew }
+  const empMap  = new Map(); // employee_id (lower) -> { empRow, bfsDate, ohcDate, isNew }
   let skipped = 0, addedCount = 0, updatedCount = 0;
 
   for (const raw of dataRows) {
@@ -788,14 +788,14 @@ async function importFromCsv(text) {
 
   // ── Step 2: Batch upsert employees, get back real DB UUIDs ───────────────────
   const BATCH = 200;
-  const empIdToDbId = {}; // employee_id text (lower) → real Postgres UUID
+  const empIdToDbId = {}; // employee_id text (lower) -> real Postgres UUID
   const allEmpRows = allEntries.map(e => e.empRow);
 
   showProgressToast(`Writing ${allEmpRows.length} employees to database…`, 30);
   for (let i = 0; i < allEmpRows.length; i += BATCH) {
     const chunk = allEmpRows.slice(i, i + BATCH);
     const pct   = 30 + Math.round((i / allEmpRows.length) * 40);
-    showProgressToast(`Writing employees ${i + 1}–${Math.min(i + BATCH, allEmpRows.length)} of ${allEmpRows.length}…`, pct);
+    showProgressToast(`Writing employees ${i + 1}-${Math.min(i + BATCH, allEmpRows.length)} of ${allEmpRows.length}...`, pct);
     const { data: upserted, error } = await sb.from("employees")
       .upsert(chunk, { onConflict: "employee_id" })
       .select("id, employee_id");
