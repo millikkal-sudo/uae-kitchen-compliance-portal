@@ -953,26 +953,153 @@ function exportPDF() {
   if (!window.jspdf?.jsPDF) { showToast("PDF library still loading — try again."); return; }
   const {jsPDF}=window.jspdf, doc=new jsPDF({unit:"pt",format:"a4"});
   const pageW=doc.internal.pageSize.getWidth(), margin=40; let y=50;
+
+  // ── Header ──────────────────────────────────────────────────────────────────
   doc.setFont("helvetica","bold");doc.setFontSize(20);doc.setTextColor(17,24,39);doc.text("CALO",margin,y);
   doc.setFontSize(11);doc.setFont("helvetica","normal");doc.setTextColor(107,114,128);doc.text("UAE Kitchen Compliance Portal",margin,y+16);
   doc.setFontSize(14);doc.setFont("helvetica","bold");doc.setTextColor(17,24,39);doc.text("Staff Certificate Compliance Report",margin,y+40);
   doc.setFontSize(9);doc.setFont("helvetica","normal");doc.setTextColor(107,114,128);doc.text(`Generated: ${fmtDate(today())}`,margin,y+56);y+=80;
-  const sums=getCertSummaries(),by=countBy(sums,"status"),uc=(by.Expired||0)+(by["Expiring in 30 Days"]||0);
+
+  // ── Collect data ─────────────────────────────────────────────────────────────
+  const sums=getCertSummaries();
   const bfsBy=countBy(state.employees.map(e=>getCertSummary(e,"bfs")),"status");
   const ohcBy=countBy(state.employees.map(e=>getCertSummary(e,"ohc")),"status");
+  const scheduledSums = sums.filter(s=>s.status==="Scheduled");
+  const unhandled     = sums.filter(s=>["Expired","Expiring in 30 Days","Expiring in 90 Days","Missing"].includes(s.rawStatus)&&!s.scheduledDate);
+  const uc = (sums.filter(s=>s.rawStatus==="Expired"||s.rawStatus==="Expiring in 30 Days").length);
+
+  // ── Executive summary tiles ──────────────────────────────────────────────────
   doc.setFontSize(11);doc.setFont("helvetica","bold");doc.setTextColor(17,24,39);doc.text("EXECUTIVE SUMMARY",margin,y);y+=14;
-  const tiles=[{label:"TOTAL EMPLOYEES",value:state.employees.length},{label:"BFS VALID",value:bfsBy.Valid||0},{label:"BFS EXPIRING 30D",value:bfsBy["Expiring in 30 Days"]||0},{label:"BFS EXPIRED",value:bfsBy.Expired||0},{label:"OHC VALID",value:ohcBy.Valid||0},{label:"OHC EXPIRING 30D",value:ohcBy["Expiring in 30 Days"]||0},{label:"OHC EXPIRED",value:ohcBy.Expired||0},{label:"ACTION NEEDED",value:uc}];
-  const tc=4,gap=10,tH=52,tW=(pageW-margin*2-gap*(tc-1))/tc;
-  tiles.forEach((t,i)=>{const col=i%tc,row=Math.floor(i/tc),x=margin+col*(tW+gap),ty=y+row*(tH+gap);doc.setDrawColor(226,230,236);doc.setFillColor(248,250,252);doc.roundedRect(x,ty,tW,tH,4,4,"FD");doc.setFontSize(7);doc.setFont("helvetica","bold");doc.setTextColor(107,114,128);doc.text(t.label,x+10,ty+17,{maxWidth:tW-20});doc.setFontSize(18);doc.setFont("helvetica","bold");doc.setTextColor(17,24,39);doc.text(String(t.value),x+10,ty+38);});
+  const tiles=[
+    {label:"TOTAL EMPLOYEES",   value:state.employees.length},
+    {label:"BFS VALID",         value:bfsBy.Valid||0},
+    {label:"BFS EXPIRING 30D",  value:bfsBy["Expiring in 30 Days"]||0},
+    {label:"BFS EXPIRED",       value:bfsBy.Expired||0},
+    {label:"OHC VALID",         value:ohcBy.Valid||0},
+    {label:"OHC EXPIRING 30D",  value:ohcBy["Expiring in 30 Days"]||0},
+    {label:"OHC EXPIRED",       value:ohcBy.Expired||0},
+    {label:"ACTION NEEDED",     value:uc},
+    {label:"SCHEDULED RENEWALS",value:scheduledSums.length},
+    {label:"UNHANDLED",         value:unhandled.length},
+  ];
+  const tc=5,gap=8,tH=52,tW=(pageW-margin*2-gap*(tc-1))/tc;
+  tiles.forEach((t,i)=>{
+    const col=i%tc,row=Math.floor(i/tc),x=margin+col*(tW+gap),ty=y+row*(tH+gap);
+    const isUrgent=t.label==="ACTION NEEDED"||t.label==="UNHANDLED";
+    const isGood=t.label==="SCHEDULED RENEWALS";
+    doc.setDrawColor(226,230,236);
+    if(isUrgent){doc.setFillColor(254,226,226);}else if(isGood){doc.setFillColor(220,252,231);}else{doc.setFillColor(248,250,252);}
+    doc.roundedRect(x,ty,tW,tH,4,4,"FD");
+    doc.setFontSize(6.5);doc.setFont("helvetica","bold");
+    if(isUrgent){doc.setTextColor(185,28,28);}else if(isGood){doc.setTextColor(21,128,61);}else{doc.setTextColor(107,114,128);}
+    doc.text(t.label,x+8,ty+16,{maxWidth:tW-16});
+    doc.setFontSize(18);doc.setFont("helvetica","bold");
+    if(isUrgent){doc.setTextColor(185,28,28);}else if(isGood){doc.setTextColor(21,128,61);}else{doc.setTextColor(17,24,39);}
+    doc.text(String(t.value),x+8,ty+38);
+  });
   y+=Math.ceil(tiles.length/tc)*(tH+gap)+18;
-  doc.setFontSize(11);doc.setFont("helvetica","bold");doc.setTextColor(17,24,39);doc.text("BFS — Basic Food Safety",margin,y);
-  doc.autoTable({startY:y+8,margin:{left:margin,right:margin},head:[["Name","ID","Department","Status","Issue Date","Expiry Date"]],body:state.employees.map(e=>{const s=getCertSummary(e,"bfs");return[e.name,e.employeeId,e.department,s.status,fmtDate(s.issueDate),fmtDate(s.expiryDate)];}),styles:{fontSize:8,cellPadding:5},headStyles:{fillColor:[22,163,74],textColor:255,fontStyle:"bold"},theme:"grid"});
-  y=doc.lastAutoTable.finalY+26;if(y>680){doc.addPage();y=50;}
-  doc.setFontSize(11);doc.setFont("helvetica","bold");doc.setTextColor(17,24,39);doc.text("OHC — Occupational Health Card",margin,y);
-  doc.autoTable({startY:y+8,margin:{left:margin,right:margin},head:[["Name","ID","Department","Status","Issue Date","Expiry Date"]],body:state.employees.map(e=>{const s=getCertSummary(e,"ohc");return[e.name,e.employeeId,e.department,s.status,fmtDate(s.issueDate),fmtDate(s.expiryDate)];}),styles:{fontSize:8,cellPadding:5},headStyles:{fillColor:[109,40,217],textColor:255,fontStyle:"bold"},theme:"grid"});
+
+  // ── Scheduled Renewals section ───────────────────────────────────────────────
+  if (scheduledSums.length>0) {
+    if(y>580){doc.addPage();y=50;}
+    doc.setFontSize(11);doc.setFont("helvetica","bold");doc.setTextColor(21,128,61);
+    doc.text("📅  Scheduled Renewals",margin,y);
+    doc.autoTable({
+      startY:y+8, margin:{left:margin,right:margin},
+      head:[["Name","ID","Department","Certificate","Cert Status","Renewal Date","Note"]],
+      body:scheduledSums.sort((a,b)=>a.scheduledDate.localeCompare(b.scheduledDate)).map(s=>[
+        s.emp.name, s.emp.employeeId, s.emp.department,
+        s.cert.label, s.rawStatus,
+        fmtDate(s.scheduledDate),
+        s.scheduleNote||"—"
+      ]),
+      styles:{fontSize:8,cellPadding:5},
+      headStyles:{fillColor:[21,128,61],textColor:255,fontStyle:"bold"},
+      columnStyles:{
+        4:{textColor:[185,28,28],fontStyle:"bold"},
+        5:{textColor:[21,128,61],fontStyle:"bold"},
+      },
+      theme:"grid"
+    });
+    y=doc.lastAutoTable.finalY+26;
+  }
+
+  // ── Unhandled (needs action) section ─────────────────────────────────────────
+  if (unhandled.length>0) {
+    if(y>580){doc.addPage();y=50;}
+    doc.setFontSize(11);doc.setFont("helvetica","bold");doc.setTextColor(185,28,28);
+    doc.text("⚠  Needs Immediate Action",margin,y);
+    doc.autoTable({
+      startY:y+8, margin:{left:margin,right:margin},
+      head:[["Name","ID","Department","Certificate","Status","Expiry Date","Days"]],
+      body:unhandled.sort((a,b)=>a.daysLeft-b.daysLeft).map(s=>[
+        s.emp.name, s.emp.employeeId, s.emp.department,
+        s.cert.label, s.rawStatus, fmtDate(s.expiryDate),
+        isFinite(s.daysLeft)?(s.daysLeft<0?`${Math.abs(s.daysLeft)}d overdue`:`${s.daysLeft}d left`):"—"
+      ]),
+      styles:{fontSize:8,cellPadding:5},
+      headStyles:{fillColor:[185,28,28],textColor:255,fontStyle:"bold"},
+      columnStyles:{4:{textColor:[185,28,28],fontStyle:"bold"},6:{textColor:[185,28,28]}},
+      theme:"grid"
+    });
+    y=doc.lastAutoTable.finalY+26;
+  }
+
+  // ── BFS full register ────────────────────────────────────────────────────────
+  if(y>580){doc.addPage();y=50;}
+  doc.setFontSize(11);doc.setFont("helvetica","bold");doc.setTextColor(17,24,39);doc.text("BFS — Basic Food Safety (Full Register)",margin,y);
+  doc.autoTable({
+    startY:y+8,margin:{left:margin,right:margin},
+    head:[["Name","ID","Department","Status","Issue Date","Expiry Date","Renewal Scheduled"]],
+    body:state.employees.map(e=>{
+      const s=getCertSummary(e,"bfs");
+      return[e.name,e.employeeId,e.department,s.status,fmtDate(s.issueDate),fmtDate(s.expiryDate),s.scheduledDate?fmtDate(s.scheduledDate):"—"];
+    }),
+    styles:{fontSize:8,cellPadding:4},
+    headStyles:{fillColor:[22,163,74],textColor:255,fontStyle:"bold"},
+    didParseCell: (data) => {
+      if(data.section==="body"&&data.column.index===3) {
+        const v=data.cell.raw;
+        if(v==="Expired"||v==="Expiring in 30 Days") data.cell.styles.textColor=[185,28,28];
+        else if(v==="Scheduled") data.cell.styles.textColor=[21,128,61];
+        else if(v==="Valid") data.cell.styles.textColor=[21,128,61];
+      }
+    },
+    theme:"grid"
+  });
+
+  // ── OHC full register ────────────────────────────────────────────────────────
+  y=doc.lastAutoTable.finalY+26;if(y>580){doc.addPage();y=50;}
+  doc.setFontSize(11);doc.setFont("helvetica","bold");doc.setTextColor(17,24,39);doc.text("OHC — Occupational Health Card (Full Register)",margin,y);
+  doc.autoTable({
+    startY:y+8,margin:{left:margin,right:margin},
+    head:[["Name","ID","Department","Status","Issue Date","Expiry Date","Renewal Scheduled"]],
+    body:state.employees.map(e=>{
+      const s=getCertSummary(e,"ohc");
+      return[e.name,e.employeeId,e.department,s.status,fmtDate(s.issueDate),fmtDate(s.expiryDate),s.scheduledDate?fmtDate(s.scheduledDate):"—"];
+    }),
+    styles:{fontSize:8,cellPadding:4},
+    headStyles:{fillColor:[109,40,217],textColor:255,fontStyle:"bold"},
+    didParseCell: (data) => {
+      if(data.section==="body"&&data.column.index===3) {
+        const v=data.cell.raw;
+        if(v==="Expired"||v==="Expiring in 30 Days") data.cell.styles.textColor=[185,28,28];
+        else if(v==="Scheduled") data.cell.styles.textColor=[21,128,61];
+        else if(v==="Valid") data.cell.styles.textColor=[21,128,61];
+      }
+    },
+    theme:"grid"
+  });
+
+  // ── Footer on every page ─────────────────────────────────────────────────────
   const pc=doc.internal.getNumberOfPages();
-  for(let p=1;p<=pc;p++){doc.setPage(p);doc.setFontSize(8);doc.setTextColor(156,163,175);doc.text("UAE Kitchen Compliance Portal · Confidential",pageW/2,doc.internal.pageSize.getHeight()-20,{align:"center"});}
-  doc.save(`uae-kitchen-compliance-${today()}.pdf`);showToast("PDF report ready.");
+  for(let p=1;p<=pc;p++){
+    doc.setPage(p);
+    doc.setFontSize(8);doc.setTextColor(156,163,175);
+    doc.text(`UAE Kitchen Compliance Portal · Confidential · Page ${p} of ${pc}`,pageW/2,doc.internal.pageSize.getHeight()-20,{align:"center"});
+  }
+  doc.save(`uae-kitchen-compliance-${today()}.pdf`);
+  showToast("PDF report ready.");
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
