@@ -43,8 +43,7 @@ document.getElementById("loginForm").addEventListener("submit", async e => {
   const { data, error } = await sb.auth.signInWithPassword({ email, password });
   btn.textContent = "Sign in"; btn.disabled = false;
   if (error) { errEl.textContent = error.message; errEl.classList.remove("hidden"); return; }
-  const user = data.session?.user ?? data.user;
-  if (user) await onSignIn(user);
+  await onSignIn(data.user);
 });
 
 document.getElementById("togglePw").addEventListener("click", () => {
@@ -356,15 +355,13 @@ function initSection(type) {
   // CSV bulk employee upload
   bulkUploadForm.addEventListener("submit", async e => {
     e.preventDefault(); if (!isEditor) return;
-    // Capture form refs immediately -- e.currentTarget becomes null after first await
-    const form = e.currentTarget;
-    const file = form.elements.csvFile.files[0]; if (!file) return;
-    const btn  = form.querySelector("button[type=submit]");
+    const file = e.currentTarget.elements.csvFile.files[0]; if (!file) return;
+    const btn = e.currentTarget.querySelector("button[type=submit]");
     btn.disabled = true; btn.textContent = "Importing…";
     showProgressToast("Reading file…", 0);
     try {
       const result = await importFromCsv(await file.text());
-      form.reset(); renderAll();
+      e.currentTarget.reset(); renderAll();
       hideProgressToast();
       showToast(`✅ Done: ${result.added} added, ${result.updated} updated, ${result.skipped} skipped.`);
     } catch(err) {
@@ -496,16 +493,49 @@ async function deleteEmployee(id) {
 async function clearCertificate(empId, type) {
   if (!isEditor) return;
   const e = state.employees.find(x => x.id === empId);
-  if (!e || !confirm(`Delete ${CERTIFICATES[type].label} certificate for ${e.name}?`)) return;
-  const oldPath = e.certificates[type]?.file?.filePath;
-  e.certificates[type] = {}; renderAll(); setSyncState("syncing");
+  if (!e) return;
+  const hasFile = e.certificates[type]?.file;
+  const hasDates = e.certificates[type]?.issueDate;
+  if (!hasFile && !hasDates) return;
+
+  // Ask specifically what to delete
+  const hasFileMsg = hasFile ? `certificate file "${e.certificates[type].file.name}"` : "";
+  const confirmMsg = hasFile
+    ? `Remove the uploaded ${CERTIFICATES[type].label} file for ${e.name}?
+
+The issue date and expiry date will be kept.`
+    : `Clear all ${CERTIFICATES[type].label} certificate dates for ${e.name}?`;
+  if (!confirm(confirmMsg)) return;
+
+  setSyncState("syncing");
   try {
-    if (oldPath) await deleteStorageFile(oldPath);
-    await deleteCertFromDb(empId, type);
-    if (e._certIds) e._certIds[type] = null;
-    setSyncState("idle");
-  } catch(err) { setSyncState("error"); showToast(`Delete failed: ${err.message}`); }
-  showToast(`${CERTIFICATES[type].label} certificate deleted.`);
+    if (hasFile) {
+      // Only remove the file — keep issue date and expiry date
+      const oldPath = e.certificates[type].file.filePath;
+      if (oldPath) await deleteStorageFile(oldPath);
+      e.certificates[type] = {
+        ...e.certificates[type],
+        file: null,
+      };
+      // Update DB row: null out file columns only, keep dates
+      const { error } = await sb.from("certificates")
+        .update({ file_name: null, file_path: null, updated_at: new Date().toISOString() })
+        .eq("employee_id", empId)
+        .eq("type", type);
+      if (error) throw error;
+      showToast(`${CERTIFICATES[type].label} file removed. Dates kept.`);
+    } else {
+      // No file — wipe the whole cert record (dates only)
+      e.certificates[type] = {};
+      await deleteCertFromDb(empId, type);
+      if (e._certIds) e._certIds[type] = null;
+      showToast(`${CERTIFICATES[type].label} certificate cleared.`);
+    }
+    renderAll(); setSyncState("idle");
+  } catch(err) {
+    setSyncState("error");
+    showToast(`Delete failed: ${err.message}`);
+  }
 }
 
 // ── Delegated click handler ────────────────────────────────────────────────────
@@ -717,7 +747,7 @@ function renderSectionRows(type) {
       <td>${fmtDate(s.issueDate)}</td><td>${fmtDate(s.expiryDate)}</td>
       <td class="cert-file-cell">
         ${uploadBtn}${fileLink(s.record.file)}
-        ${isEditor&&(s.record.file||s.record.issueDate)?`<button class="icon-btn danger" data-action="del-cert" data-eid="${e.id}" data-type="${type}">🗑</button>`:""}
+        ${isEditor&&s.record.file?`<button class="icon-btn danger" title="Remove certificate file (keeps dates)" data-action="del-cert" data-eid="${e.id}" data-type="${type}">🗑</button>`:""}
       </td>
       ${isEditor?`<td class="row-actions editor-only">${editorActions}</td>`:""}
     </tr>`;
@@ -756,62 +786,67 @@ function getAlertItems(){return getCertSummaries().filter(s=>s.status!=="Missing
 async function importFromCsv(text) {
   const allRows = parseCsv(text).filter(r => r.some(c => c.trim()));
   if (allRows.length < 2) return { added: 0, updated: 0, skipped: 0 };
+
   const hdrs = allRows[0].map(h => h.toLowerCase().replace(/[^a-z0-9]/g, ""));
   const idx  = k => hdrs.indexOf(k);
   const dataRows = allRows.slice(1);
-  showProgressToast("Parsing " + dataRows.length + " rows...", 5);
-  const empMap = new Map();
-  let skipped = 0, addedCount = 0, updatedCount = 0;
+
+  // ── Step 1: Parse CSV into employee + cert records ──────────────────────────
+  showProgressToast(`Parsing ${dataRows.length} rows…`, 5);
+  const toInsert = [], toUpdate = [], certRows = [];
+  let skipped = 0;
+
   for (const raw of dataRows) {
     const row = [...raw]; while (row.length < hdrs.length) row.push("");
     const get = k => { const i = idx(k); return i >= 0 ? (row[i] || "").trim() : ""; };
     const empId = get("employeeid"), name = get("name"), dept = get("department");
     if (!empId || !name || !dept) { skipped++; continue; }
+
     const bfsDate = parseDate(get("bfsissuedate"));
     const ohcDate = parseDate(get("ohcissuedate"));
     const existing = state.employees.find(e => e.employeeId.toLowerCase() === empId.toLowerCase());
-    const createdAt = existing?.createdAt || new Date().toISOString();
-    const empRow = { name, employee_id: empId, department: dept, created_at: createdAt, updated_at: new Date().toISOString() };
-    empMap.set(empId.toLowerCase(), { empRow, bfsDate, ohcDate, isNew: !existing });
+    const id = existing?.id || crypto.randomUUID();
+
+    const empRow = { id, name, employee_id: empId, department: dept, updated_at: new Date().toISOString() };
+    if (existing) toUpdate.push(empRow);
+    else          toInsert.push({ ...empRow, created_at: new Date().toISOString() });
+
+    if (bfsDate) certRows.push({ employee_id: id, type: "bfs", issue_date: bfsDate, expiry_date: calcExpiry(bfsDate, 2), updated_at: new Date().toISOString() });
+    if (ohcDate) certRows.push({ employee_id: id, type: "ohc", issue_date: ohcDate, expiry_date: calcExpiry(ohcDate, 1), updated_at: new Date().toISOString() });
   }
-  const allEntries = [...empMap.values()];
-  if (allEntries.length === 0) return { added: 0, updated: 0, skipped };
-  allEntries.forEach(e => e.isNew ? addedCount++ : updatedCount++);
-  const BATCH = 200;
-  const empIdToDbId = {};
-  const allEmpRows = allEntries.map(e => e.empRow);
-  showProgressToast("Writing " + allEmpRows.length + " employees...", 30);
+
+  const total = toInsert.length + toUpdate.length;
+  if (total === 0) return { added: 0, updated: 0, skipped };
+
+  // ── Step 2: Batch upsert employees (single DB call) ──────────────────────────
+  showProgressToast(`Writing ${total} employees to database…`, 30);
+  const allEmpRows = [...toInsert, ...toUpdate];
+  const BATCH = 200; // Supabase handles up to ~500 rows per upsert safely
   for (let i = 0; i < allEmpRows.length; i += BATCH) {
     const chunk = allEmpRows.slice(i, i + BATCH);
     const pct = 30 + Math.round((i / allEmpRows.length) * 40);
-    showProgressToast("Writing employees " + (i+1) + "-" + Math.min(i+BATCH, allEmpRows.length) + " of " + allEmpRows.length + "...", pct);
-    const { data: upserted, error } = await sb.from("employees")
-      .upsert(chunk, { onConflict: "employee_id" })
-      .select("id, employee_id");
-    if (error) throw new Error("Employee upsert failed: " + error.message);
-    (upserted || []).forEach(r => { empIdToDbId[r.employee_id.toLowerCase()] = r.id; });
+    showProgressToast(`Writing employees ${i + 1}–${Math.min(i + BATCH, allEmpRows.length)} of ${allEmpRows.length}…`, pct);
+    const { error } = await sb.from("employees").upsert(chunk, { onConflict: "id" });
+    if (error) throw new Error(`Employee upsert failed: ${error.message}`);
   }
-  const certRows = [];
-  for (const { empRow, bfsDate, ohcDate } of allEntries) {
-    const realId = empIdToDbId[empRow.employee_id.toLowerCase()];
-    if (!realId) continue;
-    if (bfsDate) certRows.push({ employee_id: realId, type: "bfs", issue_date: bfsDate, expiry_date: calcExpiry(bfsDate, 2), updated_at: new Date().toISOString() });
-    if (ohcDate) certRows.push({ employee_id: realId, type: "ohc", issue_date: ohcDate, expiry_date: calcExpiry(ohcDate, 1), updated_at: new Date().toISOString() });
-  }
+
+  // ── Step 3: Batch upsert certificates (single DB call) ───────────────────────
   if (certRows.length > 0) {
-    showProgressToast("Writing " + certRows.length + " certificate records...", 75);
+    showProgressToast(`Writing ${certRows.length} certificate records…`, 75);
     for (let i = 0; i < certRows.length; i += BATCH) {
       const chunk = certRows.slice(i, i + BATCH);
       const { error } = await sb.from("certificates").upsert(chunk, { onConflict: "employee_id,type" });
-      if (error) throw new Error("Certificate upsert failed: " + error.message);
+      if (error) throw new Error(`Certificate upsert failed: ${error.message}`);
     }
   }
-  showProgressToast("Reloading data...", 90);
+
+  // ── Step 4: Reload state from DB (source of truth) ───────────────────────────
+  showProgressToast("Reloading data…", 90);
   await loadFromSupabase();
   setSyncState("idle");
-  return { added: addedCount, updated: updatedCount, skipped };
-}
 
+  return { added: toInsert.length, updated: toUpdate.length, skipped };
+}
 function downloadTemplate(type) {
   const cols = type==="bfs" ? ["employeeId","name","department","bfsIssueDate"] : ["employeeId","name","department","ohcIssueDate"];
   const ex   = type==="bfs" ? ["CK-1001","Sample Employee","Kitchen","2026-01-15"] : ["CK-1001","Sample Employee","Kitchen","2026-03-01"];
@@ -893,23 +928,20 @@ function hideProgressToast() {
   if (pt) pt.classList.remove("visible");
 }
 
-// ── Boot ─────────────────────────────────────────────────────────────────────
-// FIX: single entry point, no race condition.
-// getSession() is the authoritative restore on page load.
-// onAuthStateChange handles live SIGNED_IN / SIGNED_OUT events only.
-let _bootDone = false;
-
+// ── Boot ──────────────────────────────────────────────────────────────────────
 CERT_TYPES.forEach(initSection);
-render(); // show login screen immediately while session is being checked
+render(); // show login screen immediately while we check session
 
-sb.auth.getSession().then(({ data: { session: s } }) => {
-  _bootDone = true;
-  if (s?.user) onSignIn(s.user); // auto-login if a session already exists
-});
-
-sb.auth.onAuthStateChange((_event, s) => {
-  if (!_bootDone) return; // ignore the initial fire before getSession resolves
-  if (!s) {
+// onAuthStateChange is the single source of truth for auth state.
+// It fires on every page load with the restored session (INITIAL_SESSION event),
+// on sign-in (SIGNED_IN), and on sign-out (SIGNED_OUT).
+sb.auth.onAuthStateChange(async (event, sbSession) => {
+  if (event === "SIGNED_IN" || event === "INITIAL_SESSION") {
+    if (sbSession?.user && sbSession.user.id !== session?.id) {
+      // New or restored session — load data and render
+      await onSignIn(sbSession.user);
+    }
+  } else if (event === "SIGNED_OUT" || event === "USER_DELETED") {
     session = null; isEditor = false;
     state = { employees: [], settings: { ...defaultSettings } };
     render();
