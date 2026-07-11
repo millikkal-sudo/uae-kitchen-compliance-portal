@@ -73,7 +73,7 @@ async function loadFromSupabase() {
   try {
     const [{ data: emps, error: e1 }, { data: certs, error: e2 }, { data: cfg }] = await Promise.all([
       sb.from("employees").select("*").order("created_at", { ascending: false }),
-      sb.from("certificates").select("id,employee_id,type,issue_date,expiry_date,file_name,file_path"),
+      sb.from("certificates").select("id,employee_id,type,issue_date,expiry_date,file_name,file_path,scheduled_date,schedule_note"),
       sb.from("settings").select("*").eq("id", 1).single(),
     ]);
     if (e1) throw e1;
@@ -88,8 +88,10 @@ async function loadFromSupabase() {
         department: emp.department, createdAt: emp.created_at, updatedAt: emp.updated_at,
         certificates: {
           bfs: bfs.id ? { issueDate: bfs.issue_date||"", expiryDate: bfs.expiry_date||"",
+                          scheduledDate: bfs.scheduled_date||"", scheduleNote: bfs.schedule_note||"",
                           file: bfs.file_name ? { name: bfs.file_name, filePath: bfs.file_path, dataUrl: null } : null } : {},
           ohc: ohc.id ? { issueDate: ohc.issue_date||"", expiryDate: ohc.expiry_date||"",
+                          scheduledDate: ohc.scheduled_date||"", scheduleNote: ohc.schedule_note||"",
                           file: ohc.file_name ? { name: ohc.file_name, filePath: ohc.file_path, dataUrl: null } : null } : {},
         },
         _certIds: { bfs: bfs.id||null, ohc: ohc.id||null },
@@ -148,12 +150,14 @@ async function upsertCertificate(empStateId, type, cert, existingCertId) {
   }
 
   const payload = {
-    employee_id: realEmpId, type,
-    issue_date:  cert.issueDate  || null,
-    expiry_date: cert.expiryDate || null,
-    file_name:   cert.file?.name     || null,
-    file_path:   cert.file?.filePath || null,
-    updated_at:  new Date().toISOString(),
+    employee_id:    realEmpId, type,
+    issue_date:     cert.issueDate     || null,
+    expiry_date:    cert.expiryDate    || null,
+    file_name:      cert.file?.name     || null,
+    file_path:      cert.file?.filePath || null,
+    scheduled_date: cert.scheduledDate || null,
+    schedule_note:  cert.scheduleNote  || null,
+    updated_at:     new Date().toISOString(),
   };
   if (existingCertId) payload.id = existingCertId;
   const { data, error } = await sb.from("certificates")
@@ -283,6 +287,64 @@ certUploadModalForm.addEventListener("submit", async e => {
     console.error(err); setSyncState("error");
     showToast(`Save failed: ${err.message}`);
   }
+});
+
+// ── Schedule modal ────────────────────────────────────────────────────────────
+const scheduleModal     = document.getElementById("scheduleModal");
+const scheduleModalForm = document.getElementById("scheduleModalForm");
+
+function openScheduleModal(empId, type) {
+  const emp = state.employees.find(x => x.id === empId); if (!emp) return;
+  const cert = emp.certificates[type] || {};
+  document.getElementById("scheduleModalTitle").textContent = `Schedule ${CERTIFICATES[type].label} Renewal – ${emp.name}`;
+  scheduleModalForm.elements.employeeId.value   = empId;
+  scheduleModalForm.elements.type.value         = type;
+  scheduleModalForm.elements.scheduledDate.value = cert.scheduledDate || "";
+  scheduleModalForm.elements.scheduleNote.value  = cert.scheduleNote  || "";
+  scheduleModal.classList.remove("hidden");
+}
+
+function closeScheduleModal() {
+  scheduleModal.classList.add("hidden");
+  scheduleModalForm.reset();
+}
+
+document.getElementById("scheduleModalClose").addEventListener("click", closeScheduleModal);
+document.getElementById("scheduleModalCancel").addEventListener("click", closeScheduleModal);
+scheduleModal.addEventListener("click", e => { if (e.target === scheduleModal) closeScheduleModal(); });
+
+scheduleModalForm.addEventListener("submit", async e => {
+  e.preventDefault();
+  const d    = formData(e.currentTarget);
+  const emp  = state.employees.find(x => x.id === d.employeeId); if (!emp) return;
+  const type = d.type;
+  const prev = emp.certificates[type] || {};
+  const certData = { ...prev, scheduledDate: d.scheduledDate, scheduleNote: d.scheduleNote || "" };
+  emp.certificates[type] = certData;
+  setSyncState("syncing");
+  try {
+    const certId = await upsertCertificate(emp.id, type, certData, emp._certIds?.[type]);
+    if (!emp._certIds) emp._certIds = {};
+    emp._certIds[type] = certId;
+    setSyncState("idle"); closeScheduleModal(); renderAll();
+    showToast(`✅ Renewal scheduled for ${emp.name} on ${fmtDate(d.scheduledDate)}.`);
+  } catch(err) { setSyncState("error"); showToast(`Save failed: ${err.message}`); }
+});
+
+document.getElementById("scheduleModalClear").addEventListener("click", async () => {
+  const empId = scheduleModalForm.elements.employeeId.value;
+  const type  = scheduleModalForm.elements.type.value;
+  const emp   = state.employees.find(x => x.id === empId); if (!emp) return;
+  if (!confirm("Clear the scheduled renewal date?")) return;
+  const prev = emp.certificates[type] || {};
+  const certData = { ...prev, scheduledDate: "", scheduleNote: "" };
+  emp.certificates[type] = certData;
+  setSyncState("syncing");
+  try {
+    await upsertCertificate(emp.id, type, certData, emp._certIds?.[type]);
+    setSyncState("idle"); closeScheduleModal(); renderAll();
+    showToast("Schedule cleared.");
+  } catch(err) { setSyncState("error"); showToast(`Failed: ${err.message}`); }
 });
 
 // ── Per-section (BFS / OHC) wiring ────────────────────────────────────────────
@@ -546,7 +608,8 @@ document.body.addEventListener("click", e => {
   if (a === "del-emp")     deleteEmployee(btn.dataset.id);
   if (a === "edit-cert")   showCertEdit(btn.dataset.eid, btn.dataset.type);
   if (a === "del-cert")    clearCertificate(btn.dataset.eid, btn.dataset.type);
-  if (a === "upload-cert") openCertModal(btn.dataset.eid, btn.dataset.type);
+  if (a === "upload-cert")  openCertModal(btn.dataset.eid, btn.dataset.type);
+  if (a === "schedule-cert") openScheduleModal(btn.dataset.eid, btn.dataset.type);
   if (a === "mail-alert")  openGmailDraft([JSON.parse(btn.dataset.item)]);
 });
 
@@ -709,11 +772,28 @@ function renderDashboard() {
     document.getElementById(`${type}ExpiredMetric`).textContent = tb.Expired||0;
     document.getElementById(`${type}MissingMetric`).textContent = tb.Missing||0;
   });
-  setRows("attentionRows", urgent.slice(0,8).map(s=>`<tr>
-    <td>${escHtml(s.emp.name)}<br><small>${escHtml(s.emp.employeeId)}</small></td>
-    <td>${escHtml(s.cert.label)}</td><td>${fmtDate(s.expiryDate)}</td><td>${badge(s.status)}</td>
-    <td><button class="send-manager-btn" type="button" data-action="mail-alert" data-item='${escAttr(JSON.stringify(summaryToItem(s)))}'>✉ Send to Manager</button></td>
-  </tr>`),5,"No urgent renewals.");
+  // Split urgent into unscheduled (needs action) and scheduled (being handled)
+  const unscheduled = urgent.filter(s => s.status !== "Scheduled");
+  const scheduled   = urgent.filter(s => s.status === "Scheduled");
+
+  const allDashRows = [
+    ...unscheduled.map(s => `<tr>
+      <td>${escHtml(s.emp.name)}<br><small>${escHtml(s.emp.employeeId)}</small></td>
+      <td>${escHtml(s.cert.label)}</td>
+      <td>${fmtDate(s.expiryDate)}</td>
+      <td>${badge(s.rawStatus, s.scheduledDate)}</td>
+      <td><button class="send-manager-btn" type="button" data-action="mail-alert" data-item='${escAttr(JSON.stringify(summaryToItem(s)))}'>✉ Send to Manager</button></td>
+    </tr>`),
+    ...(scheduled.length ? [`<tr><td colspan="5" class="dash-section-divider">📅 Scheduled renewals (${scheduled.length})</td></tr>`] : []),
+    ...scheduled.map(s => `<tr class="scheduled-row">
+      <td>${escHtml(s.emp.name)}<br><small>${escHtml(s.emp.employeeId)}</small></td>
+      <td>${escHtml(s.cert.label)}</td>
+      <td>${fmtDate(s.expiryDate)}</td>
+      <td>${badge(s.status, s.scheduledDate)}</td>
+      <td><span class="schedule-note-inline">${s.scheduleNote ? escHtml(s.scheduleNote) : "—"}</span></td>
+    </tr>`),
+  ];
+  setRows("attentionRows", allDashRows, 5, "No urgent renewals.");
   const grouped = sums.reduce((g,s)=>{
     const d=s.emp.department||"Unassigned"; g[d]||={d,total:0,urgent:0,warn:0};
     g[d].total++; if(s.status==="Expired"||s.status==="Expiring in 30 Days")g[d].urgent++; if(s.status==="Expiring in 90 Days")g[d].warn++;
@@ -738,12 +818,17 @@ function renderSectionRows(type) {
     const s = getCertSummary(e,type);
     const uploadBtn = isEditor && !s.record.file
       ? `<button class="upload-cert-btn" title="Upload ${CERTIFICATES[type].label} file" data-action="upload-cert" data-eid="${e.id}" data-type="${type}">＋</button>` : "";
+    const scheduleBtn = isEditor && s.status !== "Valid"
+      ? `<button class="schedule-btn ${s.status==="Scheduled"?"scheduled-active":""}" title="${s.status==="Scheduled"?`Scheduled: ${fmtDate(s.scheduledDate)}`:"Schedule renewal"}" data-action="schedule-cert" data-eid="${e.id}" data-type="${type}">📅 ${s.status==="Scheduled"?"Rescheduled":"Schedule"}</button>` : "";
     const editorActions = isEditor ? `
       <button class="text-btn" data-action="edit-emp" data-id="${e.id}" data-section="${type}">Edit</button>
       <button class="text-btn danger" data-action="del-emp" data-id="${e.id}">Remove</button>` : "";
     return `<tr>
       <td><strong>${escHtml(e.name)}</strong></td><td>${escHtml(e.employeeId)}</td><td>${escHtml(e.department)}</td>
-      <td>${isEditor?`<button class="cert-status-btn" data-action="edit-cert" data-eid="${e.id}" data-type="${type}">${badge(s.status)}</button>`:badge(s.status)}</td>
+      <td>
+        ${isEditor?`<button class="cert-status-btn" data-action="edit-cert" data-eid="${e.id}" data-type="${type}">${badge(s.status,s.scheduledDate)}</button>`:badge(s.status,s.scheduledDate)}
+        ${scheduleBtn}
+      </td>
       <td>${fmtDate(s.issueDate)}</td><td>${fmtDate(s.expiryDate)}</td>
       <td class="cert-file-cell">
         ${uploadBtn}${fileLink(s.record.file)}
@@ -761,7 +846,7 @@ function renderAlertQueue() {
   const items = getAlertItems();
   document.getElementById("alertQueue").innerHTML = items.length
     ? items.map(s=>`<div class="alert-item">
-        <div><strong>${escHtml(s.emp.name)} · ${escHtml(s.cert.label)} ${escHtml(s.status.toLowerCase())}</strong>
+        <div><strong>${escHtml(s.emp.name)} · ${escHtml(s.cert.label)} ${escHtml(s.rawStatus.toLowerCase())}</strong>
         <span>${escHtml(s.emp.department)} · expires ${fmtDate(s.expiryDate)} · ${fmtDays(s.daysLeft)}</span></div>
         <div class="alert-actions"><button class="primary-btn send-manager-btn" data-action="mail-alert" data-item='${escAttr(JSON.stringify(summaryToItem(s)))}'>✉ Send to Manager</button></div>
       </div>`).join("")
@@ -774,13 +859,23 @@ function getCertSummary(emp,type) {
   const cert=CERTIFICATES[type], record=emp.certificates[type]||{};
   const issueDate=record.issueDate||"", expiryDate=record.expiryDate||(issueDate?calcExpiry(issueDate,cert.validYears):"");
   const daysLeft=expiryDate?daysUntil(expiryDate):Infinity;
-  return {emp,type,cert,record,issueDate,expiryDate,daysLeft,status:certStatus(expiryDate)};
+  const rawStatus=certStatus(expiryDate);
+  const scheduledDate=record.scheduledDate||"";
+  const scheduleNote=record.scheduleNote||"";
+  const status=effectiveStatus(rawStatus, scheduledDate);
+  return {emp,type,cert,record,issueDate,expiryDate,daysLeft,rawStatus,status,scheduledDate,scheduleNote};
 }
 function certStatus(exp){if(!exp)return"Missing";const d=daysUntil(exp);if(d<0)return"Expired";if(d<=30)return"Expiring in 30 Days";if(d<=90)return"Expiring in 90 Days";return"Valid";}
+// Returns "Scheduled" if a scheduledDate is set and cert is not Valid
+function effectiveStatus(status, scheduledDate) {
+  if (status === "Valid") return "Valid";
+  if (scheduledDate) return "Scheduled";
+  return status;
+}
 function daysUntil(ds){const t=d=>new Date(d.getFullYear(),d.getMonth(),d.getDate());return Math.ceil((t(new Date(`${ds}T00:00:00`))-t(new Date()))/86400000);}
 function calcExpiry(issue,years){const d=new Date(`${issue}T00:00:00`);d.setFullYear(d.getFullYear()+years);return d.toISOString().slice(0,10);}
 function summaryToItem(s){return{employeeName:s.emp.name,employeeId:s.emp.employeeId,department:s.emp.department,certType:s.cert.label,status:s.status,expiryDate:s.expiryDate||null,daysLeft:isFinite(s.daysLeft)?s.daysLeft:null};}
-function getAlertItems(){return getCertSummaries().filter(s=>s.status!=="Missing"&&(s.daysLeft<0||s.daysLeft<=state.settings.reminderDays)).sort((a,b)=>a.daysLeft-b.daysLeft);}
+function getAlertItems(){return getCertSummaries().filter(s=>s.status!=="Missing"&&s.status!=="Scheduled"&&s.status!=="Valid"&&(s.daysLeft<0||s.daysLeft<=state.settings.reminderDays)).sort((a,b)=>a.daysLeft-b.daysLeft);}
 
 // ── CSV import ─────────────────────────────────────────────────────────────────
 async function importFromCsv(text) {
@@ -885,7 +980,11 @@ function createEmptyCertificates(){return{bfs:{},ohc:{}};}
 function formData(form){return Object.fromEntries(new FormData(form).entries());}
 function setRows(id,rows,cols,empty){document.getElementById(id).innerHTML=rows.length?rows.join(""):`<tr><td colspan="${cols}" class="empty-state">${empty}</td></tr>`;}
 function countBy(arr,key){return arr.reduce((c,i)=>{c[i[key]]=(c[i[key]]||0)+1;return c;},{});}
-function badge(status){const cls=status==="Valid"?"good":status==="Expiring in 90 Days"?"watch":status==="Expiring in 30 Days"?"warn":status==="Missing"?"neutral":"bad";return`<span class="badge ${cls}">${escHtml(status)}</span>`;}
+function badge(status, scheduledDate=""){
+  if(status==="Scheduled") return`<span class="badge scheduled" title="Scheduled for ${fmtDate(scheduledDate)}">📅 Scheduled ${fmtDate(scheduledDate)}</span>`;
+  const cls=status==="Valid"?"good":status==="Expiring in 90 Days"?"watch":status==="Expiring in 30 Days"?"warn":status==="Missing"?"neutral":"bad";
+  return`<span class="badge ${cls}">${escHtml(status)}</span>`;
+}
 function fmtDate(v){if(!v)return"—";return new Intl.DateTimeFormat("en-US",{year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date(`${v}T00:00:00`));}
 function fmtDays(d){if(!isFinite(d))return"not recorded";if(d<0)return`${Math.abs(d)} days overdue`;if(d===0)return"expires today";return`${d} days remaining`;}
 function escHtml(v){return String(v??"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;");}
