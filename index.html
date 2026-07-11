@@ -449,6 +449,29 @@
     </div>
 
     <!-- cert upload modal -->
+    <!-- Schedule modal -->
+    <div id="scheduleModal" class="modal-overlay hidden">
+      <div class="modal-box">
+        <div class="modal-header">
+          <h3 id="scheduleModalTitle">Schedule Renewal</h3>
+          <button id="scheduleModalClose" class="ghost-btn" type="button">✕</button>
+        </div>
+        <form id="scheduleModalForm" class="modal-form">
+          <input name="employeeId" type="hidden" />
+          <input name="type" type="hidden" />
+          <label>Renewal date<input name="scheduledDate" type="date" required /></label>
+          <label>Note <span style="font-weight:400;color:#6b7280">(optional)</span>
+            <input name="scheduleNote" type="text" placeholder="e.g. Booked with DM training center" />
+          </label>
+          <div class="modal-actions">
+            <button class="primary-btn" type="submit">Save Schedule</button>
+            <button id="scheduleModalCancel" class="secondary-btn" type="button">Cancel</button>
+            <button id="scheduleModalClear" class="ghost-btn" type="button" style="margin-left:auto;color:#dc2626">Clear Schedule</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
     <div id="certUploadModal" class="modal-overlay hidden">
       <div class="modal-box">
         <div class="modal-header">
