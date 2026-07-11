@@ -779,24 +779,29 @@ function renderDeptFilterOptions() {
 function renderDashboard() {
   const sums   = getCertSummaries();
   const by     = countBy(sums,"status");
-  const urgent = sums.filter(s=>s.status==="Expired"||s.status==="Expiring in 30 Days").sort((a,b)=>a.daysLeft-b.daysLeft);
-  const uc     = (by.Expired||0)+(by["Expiring in 30 Days"]||0);
+  // Urgent by REAL status — includes scheduled items so they show in the scheduled section below
+  const urgent = sums.filter(s=>s.rawStatus==="Expired"||s.rawStatus==="Expiring in 30 Days").sort((a,b)=>a.daysLeft-b.daysLeft);
+  const uc     = (by.Expired||0)+(by["Expiring in 30 Days"]||0); // excludes scheduled = still needs action
+  // Split urgent into unscheduled (needs action) and scheduled (being handled)
+  const unscheduled = urgent.filter(s => s.status !== "Scheduled");
+  const scheduled   = urgent.filter(s => s.status === "Scheduled");
   document.getElementById("employeeMetric").textContent = state.employees.length;
   document.getElementById("urgentMetric").textContent   = uc;
-  document.getElementById("attentionCount").textContent = `${urgent.length} items`;
+  document.getElementById("attentionCount").textContent = `${unscheduled.length} items` + (scheduled.length ? ` · ${scheduled.length} scheduled` : ``);
   const pill = document.getElementById("overallStatus");
   pill.textContent = uc ? "Action Needed" : "Compliant"; pill.classList.toggle("risk", Boolean(uc));
   CERT_TYPES.forEach(type => {
-    const tb = countBy(state.employees.map(e=>getCertSummary(e,type)),"status");
+    const typeSums = state.employees.map(e=>getCertSummary(e,type));
+    // Count by REAL status (expiry-date based) — scheduling never moves a cert out of these boxes
+    const tb = countBy(typeSums,"rawStatus");
     document.getElementById(`${type}ValidMetric`).textContent   = tb.Valid||0;
     document.getElementById(`${type}NinetyMetric`).textContent  = tb["Expiring in 90 Days"]||0;
     document.getElementById(`${type}ThirtyMetric`).textContent  = tb["Expiring in 30 Days"]||0;
     document.getElementById(`${type}ExpiredMetric`).textContent = tb.Expired||0;
     document.getElementById(`${type}MissingMetric`).textContent = tb.Missing||0;
+    // Scheduled = certs with a renewal date set (overlaps with the counts above)
+    document.getElementById(`${type}ScheduledMetric`).textContent = typeSums.filter(s => s.scheduledDate && s.rawStatus !== "Valid").length;
   });
-  // Split urgent into unscheduled (needs action) and scheduled (being handled)
-  const unscheduled = urgent.filter(s => s.status !== "Scheduled");
-  const scheduled   = urgent.filter(s => s.status === "Scheduled");
 
   const allDashRows = [
     ...unscheduled.map(s => `<tr>
