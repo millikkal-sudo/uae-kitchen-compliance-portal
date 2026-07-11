@@ -131,7 +131,7 @@ tr:hover td { background: #fafbfc; }
 /* ── Dashboard cert overview ─────────────────────────────────────── */
 .cert-overview-grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:20px; }
 .cert-overview-panel .panel-heading h3 { display:flex; align-items:center; gap:8px; }
-.cert-stat-grid { display:grid; grid-template-columns:repeat(5,1fr); gap:10px; padding:16px 18px; }
+.cert-stat-grid { display:grid; grid-template-columns:repeat(6,1fr); gap:10px; padding:16px 18px; }
 .cert-stat { border-radius:8px; padding:10px 8px; text-align:center; }
 .cert-stat span { display:block; font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted); margin-bottom:6px; }
 .cert-stat strong { font-size:22px; font-weight:700; color:var(--text); }
@@ -140,6 +140,7 @@ tr:hover td { background: #fafbfc; }
 .cert-stat.warn    { background:#ffedd5; } .cert-stat.warn    strong { color:#9a3412; }
 .cert-stat.bad     { background:#fee2e2; } .cert-stat.bad     strong { color:var(--danger); }
 .cert-stat.neutral { background:#f3f4f6; } .cert-stat.neutral strong { color:#374151; }
+.cert-stat.sched   { background:#dbeafe; } .cert-stat.sched   strong { color:#1d4ed8; }
 
 /* Status pill */
 .status-pill { padding:6px 14px; border-radius:20px; font-size:12px; font-weight:700; background:#dcfce7; color:#15803d; white-space:nowrap; }
