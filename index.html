@@ -184,11 +184,17 @@
                     <span class="step-num bfs-step">BFS</span>
                     <div>
                       <strong>Bulk Upload BFS Certificate Files</strong>
-                      <p>Name files by Employee ID (e.g. <strong>CK-1024.pdf</strong>). Pick all files at once, then confirm.</p>
-                      <label class="bulk-cert-file-label" style="margin-top:8px;">
-                        Select files (PDF / image)
-                        <input id="bulkCertInputBfs" type="file" accept=".pdf,image/*" multiple />
-                      </label>
+                      <p>Name files by Employee ID (e.g. <strong>CK-1024.pdf</strong>). Pick files or a whole folder — files already uploaded are skipped automatically.</p>
+                      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
+                        <label class="bulk-cert-file-label">
+                          Select files (PDF / image)
+                          <input id="bulkCertInputBfs" type="file" accept=".pdf,image/*" multiple />
+                        </label>
+                        <label class="bulk-cert-file-label">
+                          📁 Select whole folder
+                          <input id="bulkCertFolderBfs" type="file" webkitdirectory multiple />
+                        </label>
+                      </div>
                       <div id="bulkCertPreviewBfs" class="bulk-preview hidden" style="margin-top:8px;"></div>
                       <div id="bulkCertActionsBfs" class="bulk-cert-actions hidden" style="margin-top:8px;">
                         <button id="bulkCertConfirmBfs" class="primary-btn" type="button">Attach Files</button>
@@ -311,11 +317,17 @@
                     <span class="step-num ohc-step">OHC</span>
                     <div>
                       <strong>Bulk Upload OHC Certificate Files</strong>
-                      <p>Name files by Employee ID (e.g. <strong>CK-1024.pdf</strong>). Pick all files at once, then confirm.</p>
-                      <label class="bulk-cert-file-label" style="margin-top:8px;">
-                        Select files (PDF / image)
-                        <input id="bulkCertInputOhc" type="file" accept=".pdf,image/*" multiple />
-                      </label>
+                      <p>Name files by Employee ID (e.g. <strong>CK-1024.pdf</strong>). Pick files or a whole folder — files already uploaded are skipped automatically.</p>
+                      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
+                        <label class="bulk-cert-file-label">
+                          Select files (PDF / image)
+                          <input id="bulkCertInputOhc" type="file" accept=".pdf,image/*" multiple />
+                        </label>
+                        <label class="bulk-cert-file-label">
+                          📁 Select whole folder
+                          <input id="bulkCertFolderOhc" type="file" webkitdirectory multiple />
+                        </label>
+                      </div>
                       <div id="bulkCertPreviewOhc" class="bulk-preview hidden" style="margin-top:8px;"></div>
                       <div id="bulkCertActionsOhc" class="bulk-cert-actions hidden" style="margin-top:8px;">
                         <button id="bulkCertConfirmOhc" class="primary-btn" type="button">Attach Files</button>
