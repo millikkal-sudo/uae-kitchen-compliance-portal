@@ -485,3 +485,52 @@ tr:hover td { background: #fafbfc; }
   padding: 1px 7px;
   white-space: nowrap;
 }
+
+/* ── Schedule button ─────────────────────────────────────────────── */
+.schedule-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .12s;
+}
+.schedule-btn:hover { background: #dbeafe; }
+.schedule-btn.scheduled-active {
+  background: #f0fdf4;
+  color: #15803d;
+  border-color: #bbf7d0;
+}
+
+/* ── Scheduled badge ─────────────────────────────────────────────── */
+.badge.scheduled {
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 11px;
+}
+
+/* ── Dashboard scheduled row ─────────────────────────────────────── */
+.scheduled-row td { background: #f0fdf4; color: #15803d; }
+.scheduled-row td strong { color: #15803d; }
+.schedule-note-inline {
+  font-size: 12px;
+  color: #15803d;
+  font-style: italic;
+}
+.dash-section-divider {
+  background: #f8fafc;
+  color: #6b7280;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  padding: 8px 12px !important;
+}
