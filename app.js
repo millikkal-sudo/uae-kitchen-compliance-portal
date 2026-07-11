@@ -359,6 +359,7 @@ function initSection(type) {
   const downloadTplBtn  = document.getElementById(`downloadEmployeeTemplate${sfx}`);
   const cancelEditBtn   = document.getElementById(`cancelEmployeeEdit${sfx}`);
   const bulkCertInput   = document.getElementById(`bulkCertInput${sfx}`);
+  const bulkCertFolder  = document.getElementById(`bulkCertFolder${sfx}`);
   const bulkCertPreview = document.getElementById(`bulkCertPreview${sfx}`);
   const bulkCertActions = document.getElementById(`bulkCertActions${sfx}`);
   const bulkCertConfirm = document.getElementById(`bulkCertConfirm${sfx}`);
@@ -436,12 +437,16 @@ function initSection(type) {
 
   // Bulk cert file upload
   let bulkRows = [];
-  bulkCertInput.addEventListener("change", () => {
-    if (!bulkCertInput.files?.length) { bulkCertPreview.classList.add("hidden"); bulkCertActions.classList.add("hidden"); return; }
-    bulkRows = buildPreview(bulkCertInput.files);
+  const CERT_FILE_RE = /\.(pdf|png|jpe?g|gif|webp|bmp|heic|heif)$/i;
+  function handleBulkSelection(fileList) {
+    const files = Array.from(fileList || []).filter(f => CERT_FILE_RE.test(f.name));
+    if (!files.length) { bulkCertPreview.classList.add("hidden"); bulkCertActions.classList.add("hidden"); bulkRows = []; return; }
+    bulkRows = buildPreview(files, type);
     renderPreview(bulkRows, bulkCertPreview, type);
     bulkCertActions.classList.remove("hidden");
-  });
+  }
+  bulkCertInput.addEventListener("change", () => handleBulkSelection(bulkCertInput.files));
+  if (bulkCertFolder) bulkCertFolder.addEventListener("change", () => handleBulkSelection(bulkCertFolder.files));
   bulkCertConfirm.addEventListener("click", async () => {
     if (!isEditor) return;
     if (!bulkRows.length) { showToast("No files selected."); return; }
@@ -464,10 +469,10 @@ function initSection(type) {
     } finally {
       confirmBtn.disabled = false; confirmBtn.textContent = "Attach Files";
     }
-    bulkCertInput.value = ""; bulkCertPreview.classList.add("hidden"); bulkCertActions.classList.add("hidden"); bulkRows = [];
+    bulkCertInput.value = ""; if (bulkCertFolder) bulkCertFolder.value = ""; bulkCertPreview.classList.add("hidden"); bulkCertActions.classList.add("hidden"); bulkRows = [];
   });
   bulkCertClear.addEventListener("click", () => {
-    bulkCertInput.value = ""; bulkCertPreview.classList.add("hidden"); bulkCertActions.classList.add("hidden"); bulkRows = [];
+    bulkCertInput.value = ""; if (bulkCertFolder) bulkCertFolder.value = ""; bulkCertPreview.classList.add("hidden"); bulkCertActions.classList.add("hidden"); bulkRows = [];
   });
 
   search.addEventListener("input",      () => renderSectionRows(type));
@@ -614,7 +619,14 @@ document.body.addEventListener("click", e => {
 });
 
 // ── Bulk cert file matching ────────────────────────────────────────────────────
-function buildPreview(files) { return Array.from(files).map(f => ({ file: f, match: matchFile(f.name) })); }
+function buildPreview(files, type) {
+  return Array.from(files).map(f => {
+    const match = matchFile(f.name);
+    // Skip if this employee already has a certificate FILE attached for this type
+    const already = !!(match && match.employee.certificates?.[type]?.file);
+    return { file: f, match, already };
+  });
+}
 function matchFile(fileName) {
   const base = fileName.replace(/\.[^.]+$/, "").trim();
   const norm  = s => s.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -648,24 +660,34 @@ function matchFile(fileName) {
   return null;
 }
 function renderPreview(rows, el, type) {
-  const matched = rows.filter(r => r.match).length;
-  let html = `<p class="bulk-summary">${matched} of ${rows.length} file(s) matched · <strong>${CERTIFICATES[type].label}</strong></p>`;
-  html += `<div class="table-wrap"><table><thead><tr><th>File</th><th>Matched Employee</th><th>Match Type</th></tr></thead><tbody>`;
+  const toUpload = rows.filter(r => r.match && !r.already).length;
+  const skipped  = rows.filter(r => r.match && r.already).length;
+  const unmatched = rows.length - toUpload - skipped;
+  let html = `<p class="bulk-summary"><strong>${CERTIFICATES[type].label}</strong> · ${toUpload} new file(s) will be uploaded`
+    + (skipped ? ` · <span class="status-expiring">${skipped} skipped (already uploaded)</span>` : ``)
+    + (unmatched ? ` · <span class="status-expired">${unmatched} no match</span>` : ``) + `</p>`;
+  html += `<div class="table-wrap"><table><thead><tr><th>File</th><th>Matched Employee</th><th>Status</th></tr></thead><tbody>`;
   rows.forEach(r => {
     const matchCell = r.match
-      ? `<span class="status-valid">${escHtml(r.match.employee.name)}</span>`
+      ? `<span class="${r.already ? "muted" : "status-valid"}">${escHtml(r.match.employee.name)}</span>`
       : `<span class="status-expired">No match</span>`;
-    const howCell = r.match
-      ? `<span class="match-how">${escHtml(r.match.how)}</span>`
-      : `<span class="muted">—</span>`;
-    html += `<tr><td>${escHtml(r.file.name)}</td><td>${matchCell}</td><td>${howCell}</td></tr>`;
+    let statusCell;
+    if (!r.match)        statusCell = `<span class="muted">—</span>`;
+    else if (r.already)  statusCell = `<span class="status-expiring">Already uploaded — will skip</span>`;
+    else                 statusCell = `<span class="status-valid">Will upload (${escHtml(r.match.how)})</span>`;
+    html += `<tr><td>${escHtml(r.file.name)}</td><td>${matchCell}</td><td>${statusCell}</td></tr>`;
   });
   html += `</tbody></table></div>`;
   el.innerHTML = html; el.classList.remove("hidden");
 }
 async function applyBulkFiles(rows, type) {
-  const matched = rows.filter(r => r.match);
-  if (!matched.length) { showToast("No files matched any employee ID."); return 0; }
+  const skipped = rows.filter(r => r.match && r.already).length;
+  const matched = rows.filter(r => r.match && !r.already);
+  if (!matched.length) {
+    showToast(skipped ? `All ${skipped} matched file(s) already uploaded — nothing to do.` : "No files matched any employee ID.");
+    return 0;
+  }
+  if (skipped) showToast(`Skipping ${skipped} file(s) already uploaded…`);
 
   let count = 0, failed = 0;
   for (let i = 0; i < matched.length; i++) {
