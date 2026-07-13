@@ -181,6 +181,8 @@ tr:hover td { background: #fafbfc; }
 .cert-type-badge { display:inline-flex; align-items:center; padding:2px 7px; border-radius:5px; font-size:11px; font-weight:700; }
 .bfs-badge { background:#dcfce7; color:#15803d; }
 .ohc-badge { background:#ede9fe; color:#6d28d9; }
+.fsc-badge { background:#fee2e2; color:#dc2626; }
+.fac-badge { background:#e0f2fe; color:#0284c7; }
 
 .bulk-cert-file-label { display:flex; flex-direction:column; gap:6px; font-size:12px; font-weight:600; color:var(--text-muted); max-width:360px; }
 .bulk-cert-actions { display:flex; gap:8px; }
@@ -376,6 +378,14 @@ tr:hover td { background: #fafbfc; }
 }
 .step-num.ohc-step {
   background: #6d28d9; font-size: 10px; letter-spacing: .04em;
+  width: auto; padding: 0 8px; border-radius: 6px;
+}
+.step-num.fsc-step {
+  background: #dc2626; font-size: 10px; letter-spacing: .04em;
+  width: auto; padding: 0 8px; border-radius: 6px;
+}
+.step-num.fac-step {
+  background: #0284c7; font-size: 10px; letter-spacing: .04em;
   width: auto; padding: 0 8px; border-radius: 6px;
 }
 
