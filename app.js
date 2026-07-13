@@ -16,6 +16,14 @@ const CERTIFICATES = {
   fac: { label: "FAC", fullName: "First Aid Certificate",    validYears: 2 },
 };
 const CERT_TYPES     = Object.keys(CERTIFICATES);
+// BFS & OHC apply to ALL employees. FSC & FAC are selective — only employees
+// with an actual record (issue date, file, or schedule) are tracked.
+const UNIVERSAL_TYPES = ["bfs", "ohc"];
+function certApplies(emp, type) {
+  if (UNIVERSAL_TYPES.includes(type)) return true;
+  const r = emp.certificates?.[type] || {};
+  return Boolean(r.issueDate || r.expiryDate || r.file || r.scheduledDate);
+}
 const SECTION_SUFFIX = { bfs: "Bfs", ohc: "Ohc", fsc: "Fsc", fac: "Fac" };
 const defaultSettings = { reminderDays: 30, managerEmail: "" };
 
@@ -494,11 +502,18 @@ function initSection(type) {
   employeeForm.addEventListener("submit", async e => {
     e.preventDefault(); if (!isEditor) return;
     const d        = formData(e.currentTarget);
-    const existing = state.employees.find(x => x.id === d.editingId);
+    let existing   = state.employees.find(x => x.id === d.editingId);
     const dupId    = state.employees.find(x => x.employeeId.toLowerCase() === d.employeeId.trim().toLowerCase() && x.id !== d.editingId);
-    if (dupId) { showToast("Employee ID already in use."); return; }
+    if (dupId) {
+      if (UNIVERSAL_TYPES.includes(type)) { showToast("Employee ID already in use."); return; }
+      // Selective cert (FSC/FAC): existing ID = enroll that employee in this certificate
+      existing = dupId;
+    }
     const id        = existing?.id || crypto.randomUUID();
     const issueDate = parseDate(d[`${type}IssueDate`]);
+    if (!UNIVERSAL_TYPES.includes(type) && !issueDate && !certApplies(existing || {certificates:{}}, type)) {
+      showToast(`${CERTIFICATES[type].label} Issue Date is required to add someone to this list.`); return;
+    }
     const certData  = existing ? JSON.parse(JSON.stringify(existing.certificates)) : createEmptyCertificates();
     if (issueDate) certData[type] = { ...(certData[type]||{}), issueDate, expiryDate: calcExpiry(issueDate, CERTIFICATES[type].validYears) };
     const emp = { id, name: d.name.trim(), employeeId: d.employeeId.trim(), department: d.department.trim(),
@@ -516,7 +531,7 @@ function initSection(type) {
       }
       setSyncState("idle");
     } catch(err) { console.error(err); setSyncState("error"); showToast(`Save failed: ${err.message}`); }
-    showToast(existing ? "Employee updated." : "Employee added.");
+    showToast(dupId ? `✅ ${emp.name} added to ${CERTIFICATES[type].label} list.` : existing ? "Employee updated." : "Employee added.");
   });
 
   cancelEditBtn.addEventListener("click", () => resetEmployeeForm(type));
@@ -915,7 +930,7 @@ function renderDashboard() {
   const pill = document.getElementById("overallStatus");
   pill.textContent = uc ? "Action Needed" : "Compliant"; pill.classList.toggle("risk", Boolean(uc));
   CERT_TYPES.forEach(type => {
-    const typeSums = state.employees.map(e=>getCertSummary(e,type));
+    const typeSums = state.employees.filter(e=>certApplies(e,type)).map(e=>getCertSummary(e,type));
     // Count by REAL status (expiry-date based) — scheduling never moves a cert out of these boxes
     const tb = countBy(typeSums,"rawStatus");
     document.getElementById(`${type}ValidMetric`).textContent   = tb.Valid||0;
@@ -960,11 +975,15 @@ function renderSectionRows(type) {
   const dept = document.getElementById(`employeeDepartmentFilter${sfx}`).value;
   const stat = document.getElementById(`employeeStatusFilter${sfx}`).value;
   const emps = state.employees.filter(e => {
+    if (!certApplies(e,type)) return false;
     const s = getCertSummary(e,type);
     return [e.name,e.employeeId,e.department].join(" ").toLowerCase().includes(q)
       && (dept==="all"||e.department===dept)
       && (stat==="all"||(stat==="Expiring"?(s.status==="Expiring in 30 Days"||s.status==="Expiring in 90 Days"):s.status===stat));
   });
+  const emptyMsg = UNIVERSAL_TYPES.includes(type)
+    ? "No employees match this filter."
+    : `No employees enrolled in ${CERTIFICATES[type].label} yet. Add them via the form above (use their existing Employee ID), bulk CSV, or by uploading their certificate file.`;
   setRows(`staffRows${sfx}`, emps.map(e=>{
     const s = getCertSummary(e,type);
     const uploadBtn = isEditor && !s.record.file
@@ -987,7 +1006,7 @@ function renderSectionRows(type) {
       </td>
       ${isEditor?`<td class="row-actions editor-only">${editorActions}</td>`:""}
     </tr>`;
-  }), isEditor?8:7, "No employees match this filter.");
+  }), isEditor?8:7, emptyMsg);
 }
 function renderAlertSettings() {
   alertSettingsForm.elements.reminderDays.value = String(state.settings.reminderDays);
@@ -1005,7 +1024,7 @@ function renderAlertQueue() {
 }
 
 // ── Certificate logic ──────────────────────────────────────────────────────────
-function getCertSummaries() { return state.employees.flatMap(e=>CERT_TYPES.map(t=>getCertSummary(e,t))); }
+function getCertSummaries() { return state.employees.flatMap(e=>CERT_TYPES.filter(t=>certApplies(e,t)).map(t=>getCertSummary(e,t))); }
 function getCertSummary(emp,type) {
   const cert=CERTIFICATES[type], record=emp.certificates[type]||{};
   const issueDate=record.issueDate||"", expiryDate=record.expiryDate||(issueDate?calcExpiry(issueDate,cert.validYears):"");
@@ -1113,7 +1132,7 @@ function exportPDF() {
 
   // ── Collect data ─────────────────────────────────────────────────────────────
   const sums=getCertSummaries();
-  const typeCounts = Object.fromEntries(CERT_TYPES.map(t=>[t, countBy(state.employees.map(e=>getCertSummary(e,t)),"status")]));
+  const typeCounts = Object.fromEntries(CERT_TYPES.map(t=>[t, countBy(state.employees.filter(e=>certApplies(e,t)).map(e=>getCertSummary(e,t)),"status")]));
   const scheduledSums = sums.filter(s=>s.status==="Scheduled");
   const unhandled     = sums.filter(s=>["Expired","Expiring in 30 Days","Expiring in 90 Days","Missing"].includes(s.rawStatus)&&!s.scheduledDate);
   const uc = (sums.filter(s=>s.rawStatus==="Expired"||s.rawStatus==="Expiring in 30 Days").length);
@@ -1203,7 +1222,7 @@ function exportPDF() {
     doc.autoTable({
       startY:y+8,margin:{left:margin,right:margin},
       head:[["Name","ID","Department","Status","Issue Date","Expiry Date","Renewal Scheduled"]],
-      body:state.employees.map(e=>{
+      body:state.employees.filter(e=>certApplies(e,t)).map(e=>{
         const s=getCertSummary(e,t);
         return[e.name,e.employeeId,e.department,s.status,fmtDate(s.issueDate),fmtDate(s.expiryDate),s.scheduledDate?fmtDate(s.scheduledDate):"—"];
       }),
