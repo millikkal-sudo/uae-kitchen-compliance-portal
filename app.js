@@ -5,6 +5,7 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const EDITOR_EMAILS   = ["m.illikkal@calo.app", "j.swamy@calo.app"];
+const OPS_EMAILS      = ["j.singh@calo.app", "a.dere@calo.app", "b.ongia@calo.app", "s.dutt@calo.app", "l.lama@calo.app", "k.lanot@calo.app"];
 const SUPABASE_BUCKET = "certificates"; // Storage bucket name
 const MAX_FILE_BYTES  = 5 * 1024 * 1024; // 5 MB hard cap
 
@@ -17,9 +18,11 @@ const SECTION_SUFFIX = { bfs: "Bfs", ohc: "Ohc" };
 const defaultSettings = { reminderDays: 30, managerEmail: "" };
 
 // ── State ─────────────────────────────────────────────────────────────────────
-let state     = { employees: [], settings: { ...defaultSettings } };
+let state     = { employees: [], settings: { ...defaultSettings }, slots: [] };
 let session   = null;
 let isEditor  = false;
+let isOps     = false;
+const canSchedule = () => isEditor || isOps;
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const loginView         = document.getElementById("loginView");
@@ -54,6 +57,7 @@ document.getElementById("togglePw").addEventListener("click", () => {
 async function onSignIn(user) {
   session  = user;
   isEditor = EDITOR_EMAILS.includes(user.email.toLowerCase());
+  isOps    = !isEditor && OPS_EMAILS.includes(user.email.toLowerCase());
   setSyncState("syncing");
   await loadFromSupabase();
   render();
@@ -63,7 +67,7 @@ async function onSignIn(user) {
 // ── Sign out ──────────────────────────────────────────────────────────────────
 document.getElementById("signOutButton").addEventListener("click", async () => {
   await sb.auth.signOut();
-  session = null; isEditor = false;
+  session = null; isEditor = false; isOps = false;
   state = { employees: [], settings: { ...defaultSettings } };
   render();
 });
@@ -71,10 +75,11 @@ document.getElementById("signOutButton").addEventListener("click", async () => {
 // ── Supabase: load ────────────────────────────────────────────────────────────
 async function loadFromSupabase() {
   try {
-    const [{ data: emps, error: e1 }, { data: certs, error: e2 }, { data: cfg }] = await Promise.all([
+    const [{ data: emps, error: e1 }, { data: certs, error: e2 }, { data: cfg }, { data: slots }] = await Promise.all([
       sb.from("employees").select("*").order("created_at", { ascending: false }),
       sb.from("certificates").select("id,employee_id,type,issue_date,expiry_date,file_name,file_path,scheduled_date,schedule_note"),
       sb.from("settings").select("*").eq("id", 1).single(),
+      sb.from("schedule_slots").select("*").order("slot_date", { ascending: true }),
     ]);
     if (e1) throw e1;
     if (e2) throw e2;
@@ -98,6 +103,7 @@ async function loadFromSupabase() {
       };
     });
     state.settings = cfg ? { reminderDays: cfg.reminder_days, managerEmail: cfg.manager_email||"" } : { ...defaultSettings };
+    state.slots = (slots || []).map(s => ({ id: s.id, date: s.slot_date, label: s.label||"", capacity: s.capacity ?? 15 }));
     setSyncState("idle");
   } catch(err) {
     console.error("loadFromSupabase:", err);
@@ -289,18 +295,56 @@ certUploadModalForm.addEventListener("submit", async e => {
   }
 });
 
+// ── Schedule slots helpers ─────────────────────────────────────────────────────
+function slotBookedCount(date) {
+  // How many certificates (BFS + OHC) are scheduled on this date
+  return getCertSummaries().filter(s => s.scheduledDate === date).length;
+}
+function upcomingSlots() {
+  const today = new Date(); today.setHours(0,0,0,0);
+  return state.slots.filter(sl => new Date(`${sl.date}T00:00:00`) >= today);
+}
+
 // ── Schedule modal ────────────────────────────────────────────────────────────
 const scheduleModal     = document.getElementById("scheduleModal");
 const scheduleModalForm = document.getElementById("scheduleModalForm");
 
 function openScheduleModal(empId, type) {
+  if (!canSchedule()) return;
   const emp = state.employees.find(x => x.id === empId); if (!emp) return;
   const cert = emp.certificates[type] || {};
   document.getElementById("scheduleModalTitle").textContent = `Schedule ${CERTIFICATES[type].label} Renewal – ${emp.name}`;
   scheduleModalForm.elements.employeeId.value   = empId;
   scheduleModalForm.elements.type.value         = type;
-  scheduleModalForm.elements.scheduledDate.value = cert.scheduledDate || "";
-  scheduleModalForm.elements.scheduleNote.value  = cert.scheduleNote  || "";
+  scheduleModalForm.elements.scheduleNote.value = cert.scheduleNote || "";
+
+  const dateWrap = document.getElementById("scheduleDateWrap");
+  const slotWrap = document.getElementById("scheduleSlotWrap");
+  const dateInput = scheduleModalForm.elements.scheduledDate;
+  const slotSelect = scheduleModalForm.elements.scheduledSlot;
+
+  if (isEditor) {
+    // Editors: free date picker (full authority)
+    dateWrap.classList.remove("hidden"); slotWrap.classList.add("hidden");
+    dateInput.required = true; slotSelect.required = false;
+    dateInput.value = cert.scheduledDate || "";
+  } else {
+    // Ops: can only pick from editor-approved slot dates
+    dateWrap.classList.add("hidden"); slotWrap.classList.remove("hidden");
+    dateInput.required = false; slotSelect.required = true;
+    const slots = upcomingSlots();
+    if (!slots.length) {
+      slotSelect.innerHTML = `<option value="">No dates available — contact HR</option>`;
+    } else {
+      slotSelect.innerHTML = [`<option value="">Select a date…</option>`, ...slots.map(sl => {
+        const booked  = slotBookedCount(sl.date);
+        const isCurrent = cert.scheduledDate === sl.date;
+        const full    = booked >= sl.capacity && !isCurrent;
+        const txt = `${fmtDate(sl.date)}${sl.label ? ` — ${escHtml(sl.label)}` : ""} (${booked}/${sl.capacity}${full ? " FULL" : ""})`;
+        return `<option value="${sl.date}" ${full ? "disabled" : ""} ${isCurrent ? "selected" : ""}>${txt}</option>`;
+      })].join("");
+    }
+  }
   scheduleModal.classList.remove("hidden");
 }
 
@@ -314,12 +358,30 @@ document.getElementById("scheduleModalCancel").addEventListener("click", closeSc
 scheduleModal.addEventListener("click", e => { if (e.target === scheduleModal) closeScheduleModal(); });
 
 scheduleModalForm.addEventListener("submit", async e => {
-  e.preventDefault();
+  e.preventDefault(); if (!canSchedule()) return;
   const d    = formData(e.currentTarget);
   const emp  = state.employees.find(x => x.id === d.employeeId); if (!emp) return;
   const type = d.type;
   const prev = emp.certificates[type] || {};
-  const certData = { ...prev, scheduledDate: d.scheduledDate, scheduleNote: d.scheduleNote || "" };
+
+  // Editors use the free date; ops use the slot dropdown
+  const chosenDate = isEditor ? d.scheduledDate : d.scheduledSlot;
+  if (!chosenDate) { showToast("Please select a date."); return; }
+
+  if (!isEditor) {
+    // Validate the slot server-side of the app: must exist, be upcoming, and have capacity
+    const slot = upcomingSlots().find(sl => sl.date === chosenDate);
+    if (!slot) { showToast("That date is not available. Please pick from the list."); return; }
+    const booked = slotBookedCount(slot.date);
+    const alreadyOnThisDate = prev.scheduledDate === slot.date;
+    if (!alreadyOnThisDate && booked >= slot.capacity) {
+      showToast(`❌ ${fmtDate(slot.date)} is full (${booked}/${slot.capacity}). Pick another date.`);
+      openScheduleModal(d.employeeId, type); // refresh counts in dropdown
+      return;
+    }
+  }
+
+  const certData = { ...prev, scheduledDate: chosenDate, scheduleNote: d.scheduleNote || "" };
   emp.certificates[type] = certData;
   setSyncState("syncing");
   try {
@@ -327,11 +389,12 @@ scheduleModalForm.addEventListener("submit", async e => {
     if (!emp._certIds) emp._certIds = {};
     emp._certIds[type] = certId;
     setSyncState("idle"); closeScheduleModal(); renderAll();
-    showToast(`✅ Renewal scheduled for ${emp.name} on ${fmtDate(d.scheduledDate)}.`);
+    showToast(`✅ Renewal scheduled for ${emp.name} on ${fmtDate(chosenDate)}.`);
   } catch(err) { setSyncState("error"); showToast(`Save failed: ${err.message}`); }
 });
 
 document.getElementById("scheduleModalClear").addEventListener("click", async () => {
+  if (!canSchedule()) return;
   const empId = scheduleModalForm.elements.employeeId.value;
   const type  = scheduleModalForm.elements.type.value;
   const emp   = state.employees.find(x => x.id === empId); if (!emp) return;
@@ -346,6 +409,64 @@ document.getElementById("scheduleModalClear").addEventListener("click", async ()
     showToast("Schedule cleared.");
   } catch(err) { setSyncState("error"); showToast(`Failed: ${err.message}`); }
 });
+
+// ── Schedule slots: editor management ─────────────────────────────────────────
+const slotForm = document.getElementById("slotForm");
+slotForm.addEventListener("submit", async e => {
+  e.preventDefault(); if (!isEditor) return;
+  const d = formData(e.currentTarget);
+  const date  = d.slotDate;
+  const label = (d.slotLabel || "").trim();
+  if (!date) return;
+  if (state.slots.some(sl => sl.date === date)) { showToast("That date is already in the list."); return; }
+  setSyncState("syncing");
+  try {
+    const { data, error } = await sb.from("schedule_slots")
+      .insert({ slot_date: date, label: label || null, capacity: 15 })
+      .select().single();
+    if (error) throw error;
+    state.slots.push({ id: data.id, date: data.slot_date, label: data.label || "", capacity: data.capacity ?? 15 });
+    state.slots.sort((a,b) => a.date.localeCompare(b.date));
+    slotForm.reset(); setSyncState("idle"); renderSlots();
+    showToast(`✅ ${fmtDate(date)} added to schedule dates.`);
+  } catch(err) { setSyncState("error"); showToast(`Failed to add date: ${err.message}`); }
+});
+
+async function deleteSlot(id) {
+  if (!isEditor) return;
+  const slot = state.slots.find(sl => sl.id === id); if (!slot) return;
+  const booked = slotBookedCount(slot.date);
+  const msg = booked
+    ? `Remove ${fmtDate(slot.date)}? ${booked} employee(s) are scheduled on this date — their schedules will be KEPT, but ops cannot add more to it.`
+    : `Remove ${fmtDate(slot.date)} from the schedule dates?`;
+  if (!confirm(msg)) return;
+  setSyncState("syncing");
+  try {
+    const { error } = await sb.from("schedule_slots").delete().eq("id", id);
+    if (error) throw error;
+    state.slots = state.slots.filter(sl => sl.id !== id);
+    setSyncState("idle"); renderSlots();
+    showToast("Schedule date removed.");
+  } catch(err) { setSyncState("error"); showToast(`Failed: ${err.message}`); }
+}
+
+function renderSlots() {
+  const el = document.getElementById("slotList"); if (!el) return;
+  const today = new Date(); today.setHours(0,0,0,0);
+  const slots = [...state.slots].sort((a,b) => a.date.localeCompare(b.date));
+  if (!slots.length) { el.innerHTML = '<div class="empty-state">No schedule dates yet. Add dates above for the operations team.</div>'; return; }
+  el.innerHTML = slots.map(sl => {
+    const booked = slotBookedCount(sl.date);
+    const past   = new Date(`${sl.date}T00:00:00`) < today;
+    const full   = booked >= sl.capacity;
+    const badgeTxt = past ? "past" : (full ? "FULL" : `${booked}/${sl.capacity}`);
+    return `<div class="slot-item ${past ? "slot-past" : ""}">
+      <div><strong>${fmtDate(sl.date)}</strong>${sl.label ? ` <span class="muted">— ${escHtml(sl.label)}</span>` : ""}</div>
+      <span class="slot-count ${full && !past ? "slot-full" : ""}">${badgeTxt}</span>
+      <button class="text-btn danger" data-action="del-slot" data-id="${sl.id}" type="button">Remove</button>
+    </div>`;
+  }).join("");
+}
 
 // ── Per-section (BFS / OHC) wiring ────────────────────────────────────────────
 function initSection(type) {
@@ -615,6 +736,7 @@ document.body.addEventListener("click", e => {
   if (a === "del-cert")    clearCertificate(btn.dataset.eid, btn.dataset.type);
   if (a === "upload-cert")  openCertModal(btn.dataset.eid, btn.dataset.type);
   if (a === "schedule-cert") openScheduleModal(btn.dataset.eid, btn.dataset.type);
+  if (a === "del-slot")    deleteSlot(btn.dataset.id);
   if (a === "mail-alert")  openGmailDraft([JSON.parse(btn.dataset.item)]);
 });
 
@@ -759,13 +881,15 @@ function render() {
   if (!ok) return;
   document.querySelectorAll(".editor-only").forEach(el => el.classList.toggle("hidden", !isEditor));
   document.querySelectorAll(".editor-only-col").forEach(el => el.classList.toggle("hidden", !isEditor));
-  document.getElementById("viewerBadge").classList.toggle("hidden", isEditor);
+  const badgeEl = document.getElementById("viewerBadge");
+  badgeEl.classList.toggle("hidden", isEditor);
+  badgeEl.textContent = isOps ? "🗓 Operations · scheduling access" : "👁 View only";
   renderAll();
 }
 function renderAll() {
   renderDeptFilterOptions(); renderDashboard();
   CERT_TYPES.forEach(renderSectionRows);
-  renderAlertSettings(); renderAlertQueue();
+  renderAlertSettings(); renderAlertQueue(); renderSlots();
 }
 function renderDeptFilterOptions() {
   const depts = [...new Set(state.employees.map(e=>e.department).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
@@ -845,7 +969,7 @@ function renderSectionRows(type) {
     const s = getCertSummary(e,type);
     const uploadBtn = isEditor && !s.record.file
       ? `<button class="upload-cert-btn" title="Upload ${CERTIFICATES[type].label} file" data-action="upload-cert" data-eid="${e.id}" data-type="${type}">＋</button>` : "";
-    const scheduleBtn = isEditor && s.status !== "Valid"
+    const scheduleBtn = canSchedule() && s.status !== "Valid"
       ? `<button class="schedule-btn ${s.status==="Scheduled"?"scheduled-active":""}" title="${s.status==="Scheduled"?`Scheduled: ${fmtDate(s.scheduledDate)}`:"Schedule renewal"}" data-action="schedule-cert" data-eid="${e.id}" data-type="${type}">📅 ${s.status==="Scheduled"?"Rescheduled":"Schedule"}</button>` : "";
     const editorActions = isEditor ? `
       <button class="text-btn" data-action="edit-emp" data-id="${e.id}" data-section="${type}">Edit</button>
@@ -1195,7 +1319,7 @@ sb.auth.onAuthStateChange(async (event, sbSession) => {
       await onSignIn(sbSession.user);
     }
   } else if (event === "SIGNED_OUT" || event === "USER_DELETED") {
-    session = null; isEditor = false;
+    session = null; isEditor = false; isOps = false;
     state = { employees: [], settings: { ...defaultSettings } };
     render();
   }
