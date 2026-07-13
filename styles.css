@@ -141,6 +141,11 @@ tr:hover td { background: #fafbfc; }
 .cert-stat.bad     { background:#fee2e2; } .cert-stat.bad     strong { color:var(--danger); }
 .cert-stat.neutral { background:#f3f4f6; } .cert-stat.neutral strong { color:#374151; }
 .cert-stat.sched   { background:#dbeafe; } .cert-stat.sched   strong { color:#1d4ed8; }
+.slot-item { display:flex; align-items:center; gap:10px; padding:8px 10px; border:1px solid var(--border,#e5e7eb); border-radius:8px; margin-bottom:6px; font-size:13px; }
+.slot-item > div { flex:1; }
+.slot-item.slot-past { opacity:.5; }
+.slot-count { background:#dbeafe; color:#1d4ed8; font-weight:700; font-size:11px; padding:2px 8px; border-radius:999px; white-space:nowrap; }
+.slot-count.slot-full { background:#fee2e2; color:#dc2626; }
 
 /* Status pill */
 .status-pill { padding:6px 14px; border-radius:20px; font-size:12px; font-weight:700; background:#dcfce7; color:#15803d; white-space:nowrap; }
