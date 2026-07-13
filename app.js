@@ -12,9 +12,11 @@ const MAX_FILE_BYTES  = 5 * 1024 * 1024; // 5 MB hard cap
 const CERTIFICATES = {
   bfs: { label: "BFS", fullName: "Basic Food Safety",        validYears: 2 },
   ohc: { label: "OHC", fullName: "Occupational Health Card", validYears: 1 },
+  fsc: { label: "FSC", fullName: "Fire Safety Certificate",  validYears: 2 },
+  fac: { label: "FAC", fullName: "First Aid Certificate",    validYears: 2 },
 };
 const CERT_TYPES     = Object.keys(CERTIFICATES);
-const SECTION_SUFFIX = { bfs: "Bfs", ohc: "Ohc" };
+const SECTION_SUFFIX = { bfs: "Bfs", ohc: "Ohc", fsc: "Fsc", fac: "Fac" };
 const defaultSettings = { reminderDays: 30, managerEmail: "" };
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -85,21 +87,19 @@ async function loadFromSupabase() {
     if (e2) throw e2;
 
     state.employees = (emps || []).map(emp => {
-      const ec  = (certs || []).filter(c => c.employee_id === emp.id);
-      const bfs = ec.find(c => c.type === "bfs") || {};
-      const ohc = ec.find(c => c.type === "ohc") || {};
+      const ec = (certs || []).filter(c => c.employee_id === emp.id);
+      const certificates = {}, _certIds = {};
+      CERT_TYPES.forEach(t => {
+        const c = ec.find(x => x.type === t) || {};
+        certificates[t] = c.id ? { issueDate: c.issue_date||"", expiryDate: c.expiry_date||"",
+                                   scheduledDate: c.scheduled_date||"", scheduleNote: c.schedule_note||"",
+                                   file: c.file_name ? { name: c.file_name, filePath: c.file_path, dataUrl: null } : null } : {};
+        _certIds[t] = c.id || null;
+      });
       return {
         id: emp.id, name: emp.name, employeeId: emp.employee_id,
         department: emp.department, createdAt: emp.created_at, updatedAt: emp.updated_at,
-        certificates: {
-          bfs: bfs.id ? { issueDate: bfs.issue_date||"", expiryDate: bfs.expiry_date||"",
-                          scheduledDate: bfs.scheduled_date||"", scheduleNote: bfs.schedule_note||"",
-                          file: bfs.file_name ? { name: bfs.file_name, filePath: bfs.file_path, dataUrl: null } : null } : {},
-          ohc: ohc.id ? { issueDate: ohc.issue_date||"", expiryDate: ohc.expiry_date||"",
-                          scheduledDate: ohc.scheduled_date||"", scheduleNote: ohc.schedule_note||"",
-                          file: ohc.file_name ? { name: ohc.file_name, filePath: ohc.file_path, dataUrl: null } : null } : {},
-        },
-        _certIds: { bfs: bfs.id||null, ohc: ohc.id||null },
+        certificates, _certIds,
       };
     });
     state.settings = cfg ? { reminderDays: cfg.reminder_days, managerEmail: cfg.manager_email||"" } : { ...defaultSettings };
@@ -1048,8 +1048,6 @@ async function importFromCsv(text) {
     const empId = get("employeeid"), name = get("name"), dept = get("department");
     if (!empId || !name || !dept) { skipped++; continue; }
 
-    const bfsDate = parseDate(get("bfsissuedate"));
-    const ohcDate = parseDate(get("ohcissuedate"));
     const existing = state.employees.find(e => e.employeeId.toLowerCase() === empId.toLowerCase());
     const id = existing?.id || crypto.randomUUID();
 
@@ -1057,8 +1055,10 @@ async function importFromCsv(text) {
     if (existing) toUpdate.push(empRow);
     else          toInsert.push({ ...empRow, created_at: new Date().toISOString() });
 
-    if (bfsDate) certRows.push({ employee_id: id, type: "bfs", issue_date: bfsDate, expiry_date: calcExpiry(bfsDate, 2), updated_at: new Date().toISOString() });
-    if (ohcDate) certRows.push({ employee_id: id, type: "ohc", issue_date: ohcDate, expiry_date: calcExpiry(ohcDate, 1), updated_at: new Date().toISOString() });
+    CERT_TYPES.forEach(t => {
+      const dt = parseDate(get(`${t}issuedate`));
+      if (dt) certRows.push({ employee_id: id, type: t, issue_date: dt, expiry_date: calcExpiry(dt, CERTIFICATES[t].validYears), updated_at: new Date().toISOString() });
+    });
   }
 
   const total = toInsert.length + toUpdate.length;
@@ -1094,8 +1094,8 @@ async function importFromCsv(text) {
   return { added: toInsert.length, updated: toUpdate.length, skipped };
 }
 function downloadTemplate(type) {
-  const cols = type==="bfs" ? ["employeeId","name","department","bfsIssueDate"] : ["employeeId","name","department","ohcIssueDate"];
-  const ex   = type==="bfs" ? ["CK-1001","Sample Employee","Kitchen","2026-01-15"] : ["CK-1001","Sample Employee","Kitchen","2026-03-01"];
+  const cols = ["employeeId","name","department",`${type}IssueDate`];
+  const ex   = ["CK-1001","Sample Employee","Kitchen","2026-01-15"];
   downloadFile(`uae-kitchen-${type}-template-${today()}.csv`,[cols,ex].map(r=>r.map(csvEsc).join(",")).join("\n"),"text/csv;charset=utf-8");
 }
 
@@ -1113,8 +1113,7 @@ function exportPDF() {
 
   // ── Collect data ─────────────────────────────────────────────────────────────
   const sums=getCertSummaries();
-  const bfsBy=countBy(state.employees.map(e=>getCertSummary(e,"bfs")),"status");
-  const ohcBy=countBy(state.employees.map(e=>getCertSummary(e,"ohc")),"status");
+  const typeCounts = Object.fromEntries(CERT_TYPES.map(t=>[t, countBy(state.employees.map(e=>getCertSummary(e,t)),"status")]));
   const scheduledSums = sums.filter(s=>s.status==="Scheduled");
   const unhandled     = sums.filter(s=>["Expired","Expiring in 30 Days","Expiring in 90 Days","Missing"].includes(s.rawStatus)&&!s.scheduledDate);
   const uc = (sums.filter(s=>s.rawStatus==="Expired"||s.rawStatus==="Expiring in 30 Days").length);
@@ -1123,12 +1122,11 @@ function exportPDF() {
   doc.setFontSize(11);doc.setFont("helvetica","bold");doc.setTextColor(17,24,39);doc.text("EXECUTIVE SUMMARY",margin,y);y+=14;
   const tiles=[
     {label:"TOTAL EMPLOYEES",   value:state.employees.length},
-    {label:"BFS VALID",         value:bfsBy.Valid||0},
-    {label:"BFS EXPIRING 30D",  value:bfsBy["Expiring in 30 Days"]||0},
-    {label:"BFS EXPIRED",       value:bfsBy.Expired||0},
-    {label:"OHC VALID",         value:ohcBy.Valid||0},
-    {label:"OHC EXPIRING 30D",  value:ohcBy["Expiring in 30 Days"]||0},
-    {label:"OHC EXPIRED",       value:ohcBy.Expired||0},
+    ...CERT_TYPES.flatMap(t=>{const L=CERTIFICATES[t].label,b=typeCounts[t];return[
+      {label:`${L} VALID`,        value:b.Valid||0},
+      {label:`${L} EXPIRING 30D`, value:b["Expiring in 30 Days"]||0},
+      {label:`${L} EXPIRED`,      value:b.Expired||0},
+    ];}),
     {label:"ACTION NEEDED",     value:uc},
     {label:"SCHEDULED RENEWALS",value:scheduledSums.length},
     {label:"UNHANDLED",         value:unhandled.length},
@@ -1196,50 +1194,32 @@ function exportPDF() {
     y=doc.lastAutoTable.finalY+26;
   }
 
-  // ── BFS full register ────────────────────────────────────────────────────────
-  if(y>580){doc.addPage();y=50;}
-  doc.setFontSize(11);doc.setFont("helvetica","bold");doc.setTextColor(17,24,39);doc.text("BFS — Basic Food Safety (Full Register)",margin,y);
-  doc.autoTable({
-    startY:y+8,margin:{left:margin,right:margin},
-    head:[["Name","ID","Department","Status","Issue Date","Expiry Date","Renewal Scheduled"]],
-    body:state.employees.map(e=>{
-      const s=getCertSummary(e,"bfs");
-      return[e.name,e.employeeId,e.department,s.status,fmtDate(s.issueDate),fmtDate(s.expiryDate),s.scheduledDate?fmtDate(s.scheduledDate):"—"];
-    }),
-    styles:{fontSize:8,cellPadding:4},
-    headStyles:{fillColor:[22,163,74],textColor:255,fontStyle:"bold"},
-    didParseCell: (data) => {
-      if(data.section==="body"&&data.column.index===3) {
-        const v=data.cell.raw;
-        if(v==="Expired"||v==="Expiring in 30 Days") data.cell.styles.textColor=[185,28,28];
-        else if(v==="Scheduled") data.cell.styles.textColor=[21,128,61];
-        else if(v==="Valid") data.cell.styles.textColor=[21,128,61];
-      }
-    },
-    theme:"grid"
-  });
-
-  // ── OHC full register ────────────────────────────────────────────────────────
-  y=doc.lastAutoTable.finalY+26;if(y>580){doc.addPage();y=50;}
-  doc.setFontSize(11);doc.setFont("helvetica","bold");doc.setTextColor(17,24,39);doc.text("OHC — Occupational Health Card (Full Register)",margin,y);
-  doc.autoTable({
-    startY:y+8,margin:{left:margin,right:margin},
-    head:[["Name","ID","Department","Status","Issue Date","Expiry Date","Renewal Scheduled"]],
-    body:state.employees.map(e=>{
-      const s=getCertSummary(e,"ohc");
-      return[e.name,e.employeeId,e.department,s.status,fmtDate(s.issueDate),fmtDate(s.expiryDate),s.scheduledDate?fmtDate(s.scheduledDate):"—"];
-    }),
-    styles:{fontSize:8,cellPadding:4},
-    headStyles:{fillColor:[109,40,217],textColor:255,fontStyle:"bold"},
-    didParseCell: (data) => {
-      if(data.section==="body"&&data.column.index===3) {
-        const v=data.cell.raw;
-        if(v==="Expired"||v==="Expiring in 30 Days") data.cell.styles.textColor=[185,28,28];
-        else if(v==="Scheduled") data.cell.styles.textColor=[21,128,61];
-        else if(v==="Valid") data.cell.styles.textColor=[21,128,61];
-      }
-    },
-    theme:"grid"
+  // ── Full registers (one per certificate type) ────────────────────────────────
+  const registerColors = { bfs:[22,163,74], ohc:[109,40,217], fsc:[220,38,38], fac:[2,132,199] };
+  CERT_TYPES.forEach(t => {
+    if(y>580){doc.addPage();y=50;}
+    doc.setFontSize(11);doc.setFont("helvetica","bold");doc.setTextColor(17,24,39);
+    doc.text(`${CERTIFICATES[t].label} — ${CERTIFICATES[t].fullName} (Full Register)`,margin,y);
+    doc.autoTable({
+      startY:y+8,margin:{left:margin,right:margin},
+      head:[["Name","ID","Department","Status","Issue Date","Expiry Date","Renewal Scheduled"]],
+      body:state.employees.map(e=>{
+        const s=getCertSummary(e,t);
+        return[e.name,e.employeeId,e.department,s.status,fmtDate(s.issueDate),fmtDate(s.expiryDate),s.scheduledDate?fmtDate(s.scheduledDate):"—"];
+      }),
+      styles:{fontSize:8,cellPadding:4},
+      headStyles:{fillColor:registerColors[t]||[55,65,81],textColor:255,fontStyle:"bold"},
+      didParseCell: (data) => {
+        if(data.section==="body"&&data.column.index===3) {
+          const v=data.cell.raw;
+          if(v==="Expired"||v==="Expiring in 30 Days") data.cell.styles.textColor=[185,28,28];
+          else if(v==="Scheduled") data.cell.styles.textColor=[21,128,61];
+          else if(v==="Valid") data.cell.styles.textColor=[21,128,61];
+        }
+      },
+      theme:"grid"
+    });
+    y=doc.lastAutoTable.finalY+26;
   });
 
   // ── Footer on every page ─────────────────────────────────────────────────────
@@ -1254,7 +1234,7 @@ function exportPDF() {
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
-function createEmptyCertificates(){return{bfs:{},ohc:{}};}
+function createEmptyCertificates(){return Object.fromEntries(CERT_TYPES.map(t=>[t,{}]));}
 function formData(form){return Object.fromEntries(new FormData(form).entries());}
 function setRows(id,rows,cols,empty){document.getElementById(id).innerHTML=rows.length?rows.join(""):`<tr><td colspan="${cols}" class="empty-state">${empty}</td></tr>`;}
 function countBy(arr,key){return arr.reduce((c,i)=>{c[i[key]]=(c[i[key]]||0)+1;return c;},{});}
