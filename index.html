@@ -419,6 +419,20 @@
           </div>
 
           <div class="alerts-export-grid">
+            <section class="panel editor-only">
+              <div class="panel-heading"><h3>📅 Schedule Dates</h3></div>
+              <p class="muted" style="padding:0 18px;margin:0 0 8px;font-size:13px;">Renewal dates the operations team can schedule employees to. Capacity: 15 per date.</p>
+              <form id="slotForm" class="settings-grid" style="padding:0 18px 12px;">
+                <label>Date
+                  <input name="slotDate" type="date" required />
+                </label>
+                <label>Label <span style="font-weight:400;color:#6b7280">(optional)</span>
+                  <input name="slotLabel" type="text" placeholder="e.g. OHC medical – Karama center" />
+                </label>
+                <button class="primary-btn" type="submit">＋ Add Date</button>
+              </form>
+              <div id="slotList" style="padding:0 18px 16px;"></div>
+            </section>
             <section class="panel">
               <div class="panel-heading"><h3>Email Alert Settings</h3></div>
               <form id="alertSettingsForm" class="settings-grid">
@@ -473,7 +487,14 @@
         <form id="scheduleModalForm" class="modal-form">
           <input name="employeeId" type="hidden" />
           <input name="type" type="hidden" />
-          <label>Renewal date<input name="scheduledDate" type="date" required /></label>
+          <div id="scheduleDateWrap">
+            <label>Renewal date<input name="scheduledDate" type="date" /></label>
+          </div>
+          <div id="scheduleSlotWrap" class="hidden">
+            <label>Renewal date <span style="font-weight:400;color:#6b7280">(editor-approved dates only)</span>
+              <select name="scheduledSlot"></select>
+            </label>
+          </div>
           <label>Note <span style="font-weight:400;color:#6b7280">(optional)</span>
             <input name="scheduleNote" type="text" placeholder="e.g. Booked with DM training center" />
           </label>
