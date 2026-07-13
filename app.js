@@ -16,13 +16,21 @@ const CERTIFICATES = {
   fac: { label: "FAC", fullName: "First Aid Certificate",    validYears: 2 },
 };
 const CERT_TYPES     = Object.keys(CERTIFICATES);
-// BFS & OHC apply to ALL employees. FSC & FAC are selective — only employees
-// with an actual record (issue date, file, or schedule) are tracked.
+// FSC & FAC are selective and share ONE roster: adding someone to either lists them in both.
+// BFS & OHC cover the main workforce: everyone EXCEPT people whose only records are FSC/FAC.
+// (So a new person added via the FSC/FAC sections does NOT appear in BFS & OHC.)
 const UNIVERSAL_TYPES = ["bfs", "ohc"];
-function certApplies(emp, type) {
-  if (UNIVERSAL_TYPES.includes(type)) return true;
+const LINKED_TYPES    = ["fsc", "fac"];
+function hasCertData(emp, type) {
   const r = emp.certificates?.[type] || {};
   return Boolean(r.issueDate || r.expiryDate || r.file || r.scheduledDate);
+}
+function certApplies(emp, type) {
+  if (LINKED_TYPES.includes(type)) return LINKED_TYPES.some(t => hasCertData(emp, t));
+  if (UNIVERSAL_TYPES.includes(type)) {
+    return UNIVERSAL_TYPES.some(t => hasCertData(emp, t)) || !LINKED_TYPES.some(t => hasCertData(emp, t));
+  }
+  return hasCertData(emp, type);
 }
 const SECTION_SUFFIX = { bfs: "Bfs", ohc: "Ohc", fsc: "Fsc", fac: "Fac" };
 const defaultSettings = { reminderDays: 30, managerEmail: "" };
@@ -505,13 +513,13 @@ function initSection(type) {
     let existing   = state.employees.find(x => x.id === d.editingId);
     const dupId    = state.employees.find(x => x.employeeId.toLowerCase() === d.employeeId.trim().toLowerCase() && x.id !== d.editingId);
     if (dupId) {
-      if (UNIVERSAL_TYPES.includes(type)) { showToast("Employee ID already in use."); return; }
-      // Selective cert (FSC/FAC): existing ID = enroll that employee in this certificate
+      if (UNIVERSAL_TYPES.includes(type) && certApplies(dupId, type)) { showToast("Employee ID already in use."); return; }
+      // Existing ID not yet on this list: enroll that employee instead of rejecting
       existing = dupId;
     }
     const id        = existing?.id || crypto.randomUUID();
     const issueDate = parseDate(d[`${type}IssueDate`]);
-    if (!UNIVERSAL_TYPES.includes(type) && !issueDate && !certApplies(existing || {certificates:{}}, type)) {
+    if (!issueDate && !certApplies(existing || {certificates:{}}, type)) {
       showToast(`${CERTIFICATES[type].label} Issue Date is required to add someone to this list.`); return;
     }
     const certData  = existing ? JSON.parse(JSON.stringify(existing.certificates)) : createEmptyCertificates();
