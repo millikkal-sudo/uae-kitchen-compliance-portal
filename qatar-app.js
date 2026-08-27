@@ -4,7 +4,7 @@ const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-const EDITOR_EMAILS   = ["m.illikkal@calo.app", "j.swamy@calo.app"];
+const EDITOR_EMAILS   = ["m.illikkal@calo.app", "j.swamy@calo.app","n.bhat@calo.app"];
 const OPS_EMAILS      = ["j.singh@calo.app", "a.dere@calo.app", "b.ongia@calo.app", "s.dutt@calo.app", "l.lama@calo.app", "k.lanot@calo.app"];
 const SUPABASE_BUCKET = "certificates"; // Storage bucket (shared, qatar/ prefix used in paths)
 const QATAR_PATH_PREFIX = "qatar";
