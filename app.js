@@ -6,6 +6,7 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
 // ── Constants ─────────────────────────────────────────────────────────────────
 const EDITOR_EMAILS   = ["m.illikkal@calo.app", "j.swamy@calo.app"];
 const OPS_EMAILS      = ["j.singh@calo.app", "a.dere@calo.app", "b.ongia@calo.app", "s.dutt@calo.app", "l.lama@calo.app", "k.lanot@calo.app"];
+const MARKET         = "UAE"; // This portal's market — enforced server-side by RLS too
 const SUPABASE_BUCKET = "certificates"; // Storage bucket name
 const MAX_FILE_BYTES  = 5 * 1024 * 1024; // 5 MB hard cap
 
@@ -64,7 +65,8 @@ document.getElementById("loginForm").addEventListener("submit", async e => {
   const { data, error } = await sb.auth.signInWithPassword({ email, password });
   btn.textContent = "Sign in"; btn.disabled = false;
   if (error) { errEl.textContent = error.message; errEl.classList.remove("hidden"); return; }
-  await onSignIn(data.user);
+  const user = data.session?.user ?? data.user;
+  if (user) await onSignIn(user);
 });
 
 document.getElementById("togglePw").addEventListener("click", () => {
@@ -74,7 +76,10 @@ document.getElementById("togglePw").addEventListener("click", () => {
 
 async function onSignIn(user) {
   session  = user;
-  isEditor = EDITOR_EMAILS.includes(user.email.toLowerCase());
+  // Check role from user_roles table (source of truth — EDITOR_EMAILS is a fallback)
+  const { data: roleRow } = await sb.from("user_roles")
+    .select("role").eq("user_id", user.id).single().catch(() => ({ data: null }));
+  isEditor = roleRow?.role === "admin" || EDITOR_EMAILS.includes(user.email.toLowerCase());
   isOps    = !isEditor && OPS_EMAILS.includes(user.email.toLowerCase());
   setSyncState("syncing");
   await loadFromSupabase();
@@ -94,10 +99,10 @@ document.getElementById("signOutButton").addEventListener("click", async () => {
 async function loadFromSupabase() {
   try {
     const [{ data: emps, error: e1 }, { data: certs, error: e2 }, { data: cfg }, { data: slots }] = await Promise.all([
-      sb.from("employees").select("*").order("created_at", { ascending: false }),
-      sb.from("certificates").select("id,employee_id,type,issue_date,expiry_date,file_name,file_path,scheduled_date,schedule_note"),
-      sb.from("settings").select("*").eq("id", 1).single(),
-      sb.from("schedule_slots").select("*").order("slot_date", { ascending: true }),
+      sb.from("employees").select("*").eq("market", MARKET).order("created_at", { ascending: false }),
+      sb.from("certificates").select("id,employee_id,type,issue_date,expiry_date,file_name,file_path,scheduled_date,schedule_note").eq("market", MARKET),
+      sb.from("settings").select("*").eq("market", MARKET).single(),
+      sb.from("schedule_slots").select("*").eq("market", MARKET).order("slot_date", { ascending: true }),
     ]);
     if (e1) throw e1;
     if (e2) throw e2;
@@ -135,7 +140,7 @@ async function loadFromSupabase() {
 // employees added before Supabase existed get correctly matched/updated
 async function upsertEmployee(emp) {
   const { data, error } = await sb.from("employees").upsert(
-    { id: emp.id, name: emp.name, employee_id: emp.employeeId, department: emp.department, updated_at: new Date().toISOString() },
+    { id: emp.id, name: emp.name, employee_id: emp.employeeId, department: emp.department, market: MARKET, updated_at: new Date().toISOString() },
     { onConflict: "employee_id" }   // match on the unique text code, not UUID
   ).select("id").single();
   if (error) throw error;
@@ -172,7 +177,7 @@ async function upsertCertificate(empStateId, type, cert, existingCertId) {
   }
 
   const payload = {
-    employee_id:    realEmpId, type,
+    employee_id:    realEmpId, type, market: MARKET,
     issue_date:     cert.issueDate     || null,
     expiry_date:    cert.expiryDate    || null,
     file_name:      cert.file?.name     || null,
@@ -210,7 +215,7 @@ async function deleteStorageFile(filePath) {
 
 async function deleteEmployeeFromDb(id)     { const { error } = await sb.from("employees").delete().eq("id", id); if (error) throw error; }
 async function deleteCertFromDb(empId, type){ const { error } = await sb.from("certificates").delete().eq("employee_id", empId).eq("type", type); if (error) throw error; }
-async function saveSettingsToDb(s)          { const { error } = await sb.from("settings").upsert({ id:1, manager_email: s.managerEmail, reminder_days: s.reminderDays }, { onConflict:"id" }); if (error) throw error; }
+async function saveSettingsToDb(s)          { const { error } = await sb.from("settings").upsert({ market: MARKET, manager_email: s.managerEmail, reminder_days: s.reminderDays }, { onConflict:"market" }); if (error) throw error; }
 
 // ── Sync indicator ────────────────────────────────────────────────────────────
 function setSyncState(s) {
@@ -438,7 +443,7 @@ slotForm.addEventListener("submit", async e => {
   setSyncState("syncing");
   try {
     const { data, error } = await sb.from("schedule_slots")
-      .insert({ slot_date: date, label: label || null, capacity: 15 })
+      .insert({ slot_date: date, label: label || null, capacity: 15, market: MARKET })
       .select().single();
     if (error) throw error;
     state.slots.push({ id: data.id, date: data.slot_date, label: data.label || "", capacity: data.capacity ?? 15 });
@@ -562,13 +567,14 @@ function initSection(type) {
   // CSV bulk employee upload
   bulkUploadForm.addEventListener("submit", async e => {
     e.preventDefault(); if (!isEditor) return;
-    const file = e.currentTarget.elements.csvFile.files[0]; if (!file) return;
-    const btn = e.currentTarget.querySelector("button[type=submit]");
+    const form = e.currentTarget;
+    const file = form.elements.csvFile.files[0]; if (!file) return;
+    const btn  = form.querySelector("button[type=submit]");
     btn.disabled = true; btn.textContent = "Importing…";
     showProgressToast("Reading file…", 0);
     try {
       const result = await importFromCsv(await file.text());
-      e.currentTarget.reset(); renderAll();
+      form.reset(); renderAll();
       hideProgressToast();
       showToast(`✅ Done: ${result.added} added, ${result.updated} updated, ${result.skipped} skipped.`);
     } catch(err) {
