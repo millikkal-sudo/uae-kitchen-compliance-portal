@@ -4,16 +4,17 @@ const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-const EDITOR_EMAILS   = ["m.illikkal@calo.app", "j.swamy@calo.app","n.bhat@calo.app"];
+const EDITOR_EMAILS   = ["m.illikkal@calo.app", "j.swamy@calo.app"];
 const OPS_EMAILS      = ["j.singh@calo.app", "a.dere@calo.app", "b.ongia@calo.app", "s.dutt@calo.app", "l.lama@calo.app", "k.lanot@calo.app"];
-const SUPABASE_BUCKET = "certificates"; // Storage bucket (shared, qatar/ prefix used in paths)
-const QATAR_PATH_PREFIX = "qatar";
+const MARKET         = "UAE"; // This portal's market — enforced server-side by RLS too
+const SUPABASE_BUCKET = "certificates"; // Storage bucket name
 const MAX_FILE_BYTES  = 5 * 1024 * 1024; // 5 MB hard cap
 
 const CERTIFICATES = {
-  fh: { label: "FH",  fullName: "Food Handler Certificate", validYears: 1 },
-  fa: { label: "FA",  fullName: "First Aid Certificate",    validYears: 1 },
-  fs: { label: "FS",  fullName: "Fire Safety Certificate",  validYears: 1 },
+  bfs: { label: "BFS", fullName: "Basic Food Safety",        validYears: 2 },
+  ohc: { label: "OHC", fullName: "Occupational Health Card", validYears: 1 },
+  fsc: { label: "FSC", fullName: "Fire Safety Certificate",  validYears: 2 },
+  fac: { label: "FAC", fullName: "First Aid Certificate",    validYears: 2 },
 };
 const CERT_TYPES     = Object.keys(CERTIFICATES);
 // FSC & FAC are selective and share ONE roster: adding someone to either lists them in both.
@@ -32,7 +33,7 @@ function certApplies(emp, type) {
   }
   return hasCertData(emp, type);
 }
-const SECTION_SUFFIX = { fh: "Fh", fa: "Fa", fs: "Fs" };
+const SECTION_SUFFIX = { bfs: "Bfs", ohc: "Ohc", fsc: "Fsc", fac: "Fac" };
 const defaultSettings = { reminderDays: 30, managerEmail: "" };
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -64,7 +65,8 @@ document.getElementById("loginForm").addEventListener("submit", async e => {
   const { data, error } = await sb.auth.signInWithPassword({ email, password });
   btn.textContent = "Sign in"; btn.disabled = false;
   if (error) { errEl.textContent = error.message; errEl.classList.remove("hidden"); return; }
-  await onSignIn(data.user);
+  const user = data.session?.user ?? data.user;
+  if (user) await onSignIn(user);
 });
 
 document.getElementById("togglePw").addEventListener("click", () => {
@@ -74,7 +76,10 @@ document.getElementById("togglePw").addEventListener("click", () => {
 
 async function onSignIn(user) {
   session  = user;
-  isEditor = EDITOR_EMAILS.includes(user.email.toLowerCase());
+  // Check role from user_roles table (source of truth — EDITOR_EMAILS is a fallback)
+  const { data: roleRow } = await sb.from("user_roles")
+    .select("role").eq("user_id", user.id).single().catch(() => ({ data: null }));
+  isEditor = roleRow?.role === "admin" || EDITOR_EMAILS.includes(user.email.toLowerCase());
   isOps    = !isEditor && OPS_EMAILS.includes(user.email.toLowerCase());
   setSyncState("syncing");
   await loadFromSupabase();
@@ -93,10 +98,11 @@ document.getElementById("signOutButton").addEventListener("click", async () => {
 // ── Supabase: load ────────────────────────────────────────────────────────────
 async function loadFromSupabase() {
   try {
-    const [{ data: emps, error: e1 }, { data: certs, error: e2 }, { data: cfg }] = await Promise.all([
-      sb.from("employees_qatar").select("*").order("created_at", { ascending: false }),
-      sb.from("certificates_qatar").select("id,employee_id,type,issue_date,expiry_date,file_name,file_path"),
-      sb.from("settings_qatar").select("*").eq("id", "default").single(),
+    const [{ data: emps, error: e1 }, { data: certs, error: e2 }, { data: cfg }, { data: slots }] = await Promise.all([
+      sb.from("employees").select("*").eq("market", MARKET).order("created_at", { ascending: false }),
+      sb.from("certificates").select("id,employee_id,type,issue_date,expiry_date,file_name,file_path,scheduled_date,schedule_note").eq("market", MARKET),
+      sb.from("settings").select("*").eq("market", MARKET).single(),
+      sb.from("schedule_slots").select("*").eq("market", MARKET).order("slot_date", { ascending: true }),
     ]);
     if (e1) throw e1;
     if (e2) throw e2;
@@ -107,6 +113,7 @@ async function loadFromSupabase() {
       CERT_TYPES.forEach(t => {
         const c = ec.find(x => x.type === t) || {};
         certificates[t] = c.id ? { issueDate: c.issue_date||"", expiryDate: c.expiry_date||"",
+                                   scheduledDate: c.scheduled_date||"", scheduleNote: c.schedule_note||"",
                                    file: c.file_name ? { name: c.file_name, filePath: c.file_path, dataUrl: null } : null } : {};
         _certIds[t] = c.id || null;
       });
@@ -117,7 +124,7 @@ async function loadFromSupabase() {
       };
     });
     state.settings = cfg ? { reminderDays: cfg.reminder_days, managerEmail: cfg.manager_email||"" } : { ...defaultSettings };
-    state.slots = []; // Qatar: no schedule slots
+    state.slots = (slots || []).map(s => ({ id: s.id, date: s.slot_date, label: s.label||"", capacity: s.capacity ?? 15 }));
     setSyncState("idle");
   } catch(err) {
     console.error("loadFromSupabase:", err);
@@ -132,8 +139,8 @@ async function loadFromSupabase() {
 // Uses employee_id (the text code like CK-1024) as conflict key so
 // employees added before Supabase existed get correctly matched/updated
 async function upsertEmployee(emp) {
-  const { data, error } = await sb.from("employees_qatar").upsert(
-    { id: emp.id, name: emp.name, employee_id: emp.employeeId, department: emp.department, updated_at: new Date().toISOString() },
+  const { data, error } = await sb.from("employees").upsert(
+    { id: emp.id, name: emp.name, employee_id: emp.employeeId, department: emp.department, market: MARKET, updated_at: new Date().toISOString() },
     { onConflict: "employee_id" }   // match on the unique text code, not UUID
   ).select("id").single();
   if (error) throw error;
@@ -155,7 +162,7 @@ async function upsertCertificate(empStateId, type, cert, existingCertId) {
 
   // Get the real Supabase row id by employee_id code (the unique text id like CK-1024)
   const { data: empRow, error: empErr } = await sb
-    .from("employees_qatar")
+    .from("employees")
     .select("id")
     .eq("employee_id", emp.employeeId)
     .single();
@@ -170,16 +177,17 @@ async function upsertCertificate(empStateId, type, cert, existingCertId) {
   }
 
   const payload = {
-    employee_id:    realEmpId, type,
+    employee_id:    realEmpId, type, market: MARKET,
     issue_date:     cert.issueDate     || null,
     expiry_date:    cert.expiryDate    || null,
     file_name:      cert.file?.name     || null,
     file_path:      cert.file?.filePath || null,
-
+    scheduled_date: cert.scheduledDate || null,
+    schedule_note:  cert.scheduleNote  || null,
     updated_at:     new Date().toISOString(),
   };
   if (existingCertId) payload.id = existingCertId;
-  const { data, error } = await sb.from("certificates_qatar")
+  const { data, error } = await sb.from("certificates")
     .upsert(payload, { onConflict: "employee_id,type" })
     .select("id").single();
   if (error) throw error;
@@ -192,7 +200,7 @@ async function upsertCertificate(empStateId, type, cert, existingCertId) {
 async function uploadFileToStorage(empCode, type, file) {
   if (file.size > MAX_FILE_BYTES) throw new Error(`File too large (max 5 MB). "${file.name}" is ${(file.size/1024/1024).toFixed(1)} MB.`);
   const ext      = file.name.split(".").pop().toLowerCase();
-  const filePath = `${QATAR_PATH_PREFIX}/${empCode}/${type}/${Date.now()}.${ext}`;
+  const filePath = `${empCode}/${type}/${Date.now()}.${ext}`;
   const { error } = await sb.storage.from(SUPABASE_BUCKET).upload(filePath, file, { upsert: true, contentType: file.type });
   if (error) throw error;
   const { data: { publicUrl } } = sb.storage.from(SUPABASE_BUCKET).getPublicUrl(filePath);
@@ -205,9 +213,9 @@ async function deleteStorageFile(filePath) {
   await sb.storage.from(SUPABASE_BUCKET).remove([filePath]).catch(console.warn);
 }
 
-async function deleteEmployeeFromDb(id)     { const { error } = await sb.from("employees_qatar").delete().eq("id", id); if (error) throw error; }
-async function deleteCertFromDb(empId, type){ const { error } = await sb.from("certificates_qatar").delete().eq("employee_id", empId).eq("type", type); if (error) throw error; }
-async function saveSettingsToDb(s)          { const { error } = await sb.from("settings_qatar").upsert({ id:'default', manager_email: s.managerEmail, reminder_days: s.reminderDays }, { onConflict:"id" }); if (error) throw error; }
+async function deleteEmployeeFromDb(id)     { const { error } = await sb.from("employees").delete().eq("id", id); if (error) throw error; }
+async function deleteCertFromDb(empId, type){ const { error } = await sb.from("certificates").delete().eq("employee_id", empId).eq("type", type); if (error) throw error; }
+async function saveSettingsToDb(s)          { const { error } = await sb.from("settings").upsert({ market: MARKET, manager_email: s.managerEmail, reminder_days: s.reminderDays }, { onConflict:"market" }); if (error) throw error; }
 
 // ── Sync indicator ────────────────────────────────────────────────────────────
 function setSyncState(s) {
@@ -435,7 +443,7 @@ slotForm.addEventListener("submit", async e => {
   setSyncState("syncing");
   try {
     const { data, error } = await sb.from("schedule_slots")
-      .insert({ slot_date: date, label: label || null, capacity: 15 })
+      .insert({ slot_date: date, label: label || null, capacity: 15, market: MARKET })
       .select().single();
     if (error) throw error;
     state.slots.push({ id: data.id, date: data.slot_date, label: data.label || "", capacity: data.capacity ?? 15 });
@@ -559,13 +567,14 @@ function initSection(type) {
   // CSV bulk employee upload
   bulkUploadForm.addEventListener("submit", async e => {
     e.preventDefault(); if (!isEditor) return;
-    const file = e.currentTarget.elements.csvFile.files[0]; if (!file) return;
-    const btn = e.currentTarget.querySelector("button[type=submit]");
+    const form = e.currentTarget;
+    const file = form.elements.csvFile.files[0]; if (!file) return;
+    const btn  = form.querySelector("button[type=submit]");
     btn.disabled = true; btn.textContent = "Importing…";
     showProgressToast("Reading file…", 0);
     try {
       const result = await importFromCsv(await file.text());
-      e.currentTarget.reset(); renderAll();
+      form.reset(); renderAll();
       hideProgressToast();
       showToast(`✅ Done: ${result.added} added, ${result.updated} updated, ${result.skipped} skipped.`);
     } catch(err) {
@@ -726,7 +735,7 @@ The issue date and expiry date will be kept.`
         file: null,
       };
       // Update DB row: null out file columns only, keep dates
-      const { error } = await sb.from("certificates_qatar")
+      const { error } = await sb.from("certificates")
         .update({ file_name: null, file_path: null, updated_at: new Date().toISOString() })
         .eq("employee_id", empId)
         .eq("type", type);
@@ -884,7 +893,7 @@ document.getElementById("exportPdfTop").addEventListener("click", exportPDF);
 function openGmailDraft(items) {
   if (!items.length) { showToast("No alerts due."); return; }
   const to      = state.settings.managerEmail || "";
-  const subject = encodeURIComponent(`Qatar Kitchen Certificate Alert – ${items.length} item(s) need attention`);
+  const subject = encodeURIComponent(`UAE Kitchen Certificate Alert – ${items.length} item(s) need attention`);
   const lines   = ["Hello,","",`The following ${items.length} certificate renewal(s) require attention:`,"",
     ...items.map(i=>`• ${i.employeeName} (${i.employeeId}) · ${i.certType}: ${i.status}`+(i.expiryDate?` · Expires: ${fmtDate(i.expiryDate)}`:"")+(i.daysLeft!==null?` · ${fmtDays(i.daysLeft)}`:"")),
     "","Please arrange renewals and update the portal once new certificates are issued.","","UAE Kitchen – Compliance Portal"];
@@ -1056,68 +1065,71 @@ function getAlertItems(){return getCertSummaries().filter(s=>s.status!=="Missing
 async function importFromCsv(text) {
   const allRows = parseCsv(text).filter(r => r.some(c => c.trim()));
   if (allRows.length < 2) return { added: 0, updated: 0, skipped: 0 };
+
   const hdrs = allRows[0].map(h => h.toLowerCase().replace(/[^a-z0-9]/g, ""));
   const idx  = k => hdrs.indexOf(k);
   const dataRows = allRows.slice(1);
-  showProgressToast("Parsing " + dataRows.length + " rows...", 5);
-  const empMap = new Map();
-  let skipped = 0, addedCount = 0, updatedCount = 0;
+
+  // ── Step 1: Parse CSV into employee + cert records ──────────────────────────
+  showProgressToast(`Parsing ${dataRows.length} rows…`, 5);
+  const toInsert = [], toUpdate = [], certRows = [];
+  let skipped = 0;
+
   for (const raw of dataRows) {
     const row = [...raw]; while (row.length < hdrs.length) row.push("");
     const get = k => { const i = idx(k); return i >= 0 ? (row[i] || "").trim() : ""; };
     const empId = get("employeeid"), name = get("name"), dept = get("department");
     if (!empId || !name || !dept) { skipped++; continue; }
-    const fhDate = parseDate(get("fhissuedate"));
-    const faDate = parseDate(get("faissuedate"));
-    const fsDate = parseDate(get("fsissuedate"));
+
     const existing = state.employees.find(e => e.employeeId.toLowerCase() === empId.toLowerCase());
-    const createdAt = existing?.createdAt || new Date().toISOString();
-    const empRow = { name, employee_id: empId, department: dept, created_at: createdAt, updated_at: new Date().toISOString() };
-    empMap.set(empId.toLowerCase(), { empRow, fhDate, faDate, fsDate, isNew: !existing });
+    const id = existing?.id || crypto.randomUUID();
+
+    const empRow = { id, name, employee_id: empId, department: dept, updated_at: new Date().toISOString() };
+    if (existing) toUpdate.push(empRow);
+    else          toInsert.push({ ...empRow, created_at: new Date().toISOString() });
+
+    CERT_TYPES.forEach(t => {
+      const dt = parseDate(get(`${t}issuedate`));
+      if (dt) certRows.push({ employee_id: id, type: t, issue_date: dt, expiry_date: calcExpiry(dt, CERTIFICATES[t].validYears), updated_at: new Date().toISOString() });
+    });
   }
-  const allEntries = [...empMap.values()];
-  if (allEntries.length === 0) return { added: 0, updated: 0, skipped };
-  allEntries.forEach(e => e.isNew ? addedCount++ : updatedCount++);
-  const BATCH = 200;
-  const empIdToDbId = {};
-  const allEmpRows = allEntries.map(e => e.empRow);
-  showProgressToast("Writing " + allEmpRows.length + " employees...", 30);
+
+  const total = toInsert.length + toUpdate.length;
+  if (total === 0) return { added: 0, updated: 0, skipped };
+
+  // ── Step 2: Batch upsert employees (single DB call) ──────────────────────────
+  showProgressToast(`Writing ${total} employees to database…`, 30);
+  const allEmpRows = [...toInsert, ...toUpdate];
+  const BATCH = 200; // Supabase handles up to ~500 rows per upsert safely
   for (let i = 0; i < allEmpRows.length; i += BATCH) {
     const chunk = allEmpRows.slice(i, i + BATCH);
     const pct = 30 + Math.round((i / allEmpRows.length) * 40);
-    showProgressToast("Writing employees " + (i+1) + "-" + Math.min(i+BATCH, allEmpRows.length) + " of " + allEmpRows.length + "...", pct);
-    const { data: upserted, error } = await sb.from("employees_qatar")
-      .upsert(chunk, { onConflict: "employee_id" })
-      .select("id, employee_id");
-    if (error) throw new Error("Employee upsert failed: " + error.message);
-    (upserted || []).forEach(r => { empIdToDbId[r.employee_id.toLowerCase()] = r.id; });
+    showProgressToast(`Writing employees ${i + 1}–${Math.min(i + BATCH, allEmpRows.length)} of ${allEmpRows.length}…`, pct);
+    const { error } = await sb.from("employees").upsert(chunk, { onConflict: "id" });
+    if (error) throw new Error(`Employee upsert failed: ${error.message}`);
   }
-  const certRows = [];
-  for (const { empRow, fhDate, faDate, fsDate } of allEntries) {
-    const realId = empIdToDbId[empRow.employee_id.toLowerCase()];
-    if (!realId) continue;
-    if (fhDate) certRows.push({ employee_id: realId, type: "fh", issue_date: fhDate, expiry_date: calcExpiry(fhDate, 1), updated_at: new Date().toISOString() });
-    if (faDate) certRows.push({ employee_id: realId, type: "fa", issue_date: faDate, expiry_date: calcExpiry(faDate, 1), updated_at: new Date().toISOString() });
-    if (fsDate) certRows.push({ employee_id: realId, type: "fs", issue_date: fsDate, expiry_date: calcExpiry(fsDate, 1), updated_at: new Date().toISOString() });
-  }
+
+  // ── Step 3: Batch upsert certificates (single DB call) ───────────────────────
   if (certRows.length > 0) {
-    showProgressToast("Writing " + certRows.length + " certificate records...", 75);
+    showProgressToast(`Writing ${certRows.length} certificate records…`, 75);
     for (let i = 0; i < certRows.length; i += BATCH) {
       const chunk = certRows.slice(i, i + BATCH);
-      const { error } = await sb.from("certificates_qatar").upsert(chunk, { onConflict: "employee_id,type" });
-      if (error) throw new Error("Certificate upsert failed: " + error.message);
+      const { error } = await sb.from("certificates").upsert(chunk, { onConflict: "employee_id,type" });
+      if (error) throw new Error(`Certificate upsert failed: ${error.message}`);
     }
   }
-  showProgressToast("Reloading data...", 90);
+
+  // ── Step 4: Reload state from DB (source of truth) ───────────────────────────
+  showProgressToast("Reloading data…", 90);
   await loadFromSupabase();
   setSyncState("idle");
-  return { added: addedCount, updated: updatedCount, skipped };
-}
 
+  return { added: toInsert.length, updated: toUpdate.length, skipped };
+}
 function downloadTemplate(type) {
-  const cols = ["employeeId","name","department","fhIssueDate","faIssueDate","fsIssueDate"];
-  const ex   = ["QAT-1001","Sample Employee","Kitchen","2026-01-15","2026-02-10","2026-03-20"];
-  downloadFile("qatar-certificates-template-" + today() + ".csv", [cols,ex].map(r=>r.map(csvEsc).join(",")).join("\n"), "text/csv;charset=utf-8;");
+  const cols = ["employeeId","name","department",`${type}IssueDate`];
+  const ex   = ["CK-1001","Sample Employee","Kitchen","2026-01-15"];
+  downloadFile(`uae-kitchen-${type}-template-${today()}.csv`,[cols,ex].map(r=>r.map(csvEsc).join(",")).join("\n"),"text/csv;charset=utf-8");
 }
 
 // ── PDF export ─────────────────────────────────────────────────────────────────
