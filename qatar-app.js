@@ -1,27 +1,28 @@
 // ── Supabase ──────────────────────────────────────────────────────────────────
+// Same Supabase project as UAE — one project for all markets
 const SUPABASE_URL  = "https://iflquskysqchhbywvmow.supabase.co";
 const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlmbHF1c2t5c3FjaGhieXd2bW93Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE4NjM3ODIsImV4cCI6MjA5NzQzOTc4Mn0.FFcd80AqZ8hpyi-Bs_rPnCNZNp075YqBYM1yAYeyGUw";
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const EDITOR_EMAILS   = ["m.illikkal@calo.app", "j.swamy@calo.app"];
-const OPS_EMAILS      = ["j.singh@calo.app", "a.dere@calo.app", "b.ongia@calo.app", "s.dutt@calo.app", "l.lama@calo.app", "k.lanot@calo.app"];
-const MARKET         = "UAE"; // This portal's market — enforced server-side by RLS too
+const OPS_EMAILS      = ["n.bhat@calo.app"]; // TODO: add Qatar ops emails if needed
+const _UNUSED = ["j.singh@calo.app", "a.dere@calo.app", "b.ongia@calo.app", "s.dutt@calo.app", "l.lama@calo.app", "k.lanot@calo.app"];
+const MARKET         = "Qatar"; // This portal's market — enforced server-side by RLS too
 const SUPABASE_BUCKET = "certificates"; // Storage bucket name
 const MAX_FILE_BYTES  = 5 * 1024 * 1024; // 5 MB hard cap
 
 const CERTIFICATES = {
-  bfs: { label: "BFS", fullName: "Basic Food Safety",        validYears: 2 },
-  ohc: { label: "OHC", fullName: "Occupational Health Card", validYears: 1 },
-  fsc: { label: "FSC", fullName: "Fire Safety Certificate",  validYears: 2 },
-  fac: { label: "FAC", fullName: "First Aid Certificate",    validYears: 2 },
+  fh:  { label: "FH",  fullName: "Food Handler Certificate", validYears: 1 },
+  fa:  { label: "FA",  fullName: "First Aid Certificate",    validYears: 1 },
+  fs:  { label: "FS",  fullName: "Fire Safety Certificate",  validYears: 1 },
 };
 const CERT_TYPES     = Object.keys(CERTIFICATES);
 // FSC & FAC are selective and share ONE roster: adding someone to either lists them in both.
 // BFS & OHC cover the main workforce: everyone EXCEPT people whose only records are FSC/FAC.
 // (So a new person added via the FSC/FAC sections does NOT appear in BFS & OHC.)
 const UNIVERSAL_TYPES = ["bfs", "ohc"];
-const LINKED_TYPES    = ["fsc", "fac"];
+const LINKED_TYPES    = [];
 function hasCertData(emp, type) {
   const r = emp.certificates?.[type] || {};
   return Boolean(r.issueDate || r.expiryDate || r.file || r.scheduledDate);
@@ -33,7 +34,7 @@ function certApplies(emp, type) {
   }
   return hasCertData(emp, type);
 }
-const SECTION_SUFFIX = { bfs: "Bfs", ohc: "Ohc", fsc: "Fsc", fac: "Fac" };
+const SECTION_SUFFIX = { fh: "Fh", fa: "Fa", fs: "Fs" };
 const defaultSettings = { reminderDays: 30, managerEmail: "" };
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -896,7 +897,7 @@ function openGmailDraft(items) {
   const subject = encodeURIComponent(`UAE Kitchen Certificate Alert – ${items.length} item(s) need attention`);
   const lines   = ["Hello,","",`The following ${items.length} certificate renewal(s) require attention:`,"",
     ...items.map(i=>`• ${i.employeeName} (${i.employeeId}) · ${i.certType}: ${i.status}`+(i.expiryDate?` · Expires: ${fmtDate(i.expiryDate)}`:"")+(i.daysLeft!==null?` · ${fmtDays(i.daysLeft)}`:"")),
-    "","Please arrange renewals and update the portal once new certificates are issued.","","UAE Kitchen – Compliance Portal"];
+    "","Please arrange renewals and update the portal once new certificates are issued.","","Qatar Kitchen – Compliance Portal"];
   window.open(`https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(to)}&su=${subject}&body=${encodeURIComponent(lines.join("\n"))}`, "_blank");
   showToast("Opening Gmail draft…");
 }
@@ -1065,71 +1066,64 @@ function getAlertItems(){return getCertSummaries().filter(s=>s.status!=="Missing
 async function importFromCsv(text) {
   const allRows = parseCsv(text).filter(r => r.some(c => c.trim()));
   if (allRows.length < 2) return { added: 0, updated: 0, skipped: 0 };
-
   const hdrs = allRows[0].map(h => h.toLowerCase().replace(/[^a-z0-9]/g, ""));
-  const idx  = k => hdrs.indexOf(k);
   const dataRows = allRows.slice(1);
-
-  // ── Step 1: Parse CSV into employee + cert records ──────────────────────────
-  showProgressToast(`Parsing ${dataRows.length} rows…`, 5);
-  const toInsert = [], toUpdate = [], certRows = [];
-  let skipped = 0;
-
+  const getCol = (row, k) => { const i = hdrs.indexOf(k); return i >= 0 ? (row[i] || "").trim() : ""; };
+  showProgressToast("Parsing " + dataRows.length + " rows...", 5);
+  const empMap = new Map();
+  let skipped = 0, addedCount = 0, updatedCount = 0;
   for (const raw of dataRows) {
     const row = [...raw]; while (row.length < hdrs.length) row.push("");
-    const get = k => { const i = idx(k); return i >= 0 ? (row[i] || "").trim() : ""; };
-    const empId = get("employeeid"), name = get("name"), dept = get("department");
+    const empId = getCol(row,"employeeid"), name = getCol(row,"name"), dept = getCol(row,"department");
     if (!empId || !name || !dept) { skipped++; continue; }
-
+    const fhDate = parseDate(getCol(row,"fhissuedate"));
+    const faDate = parseDate(getCol(row,"faissuedate"));
+    const fsDate = parseDate(getCol(row,"fsissuedate"));
     const existing = state.employees.find(e => e.employeeId.toLowerCase() === empId.toLowerCase());
-    const id = existing?.id || crypto.randomUUID();
-
-    const empRow = { id, name, employee_id: empId, department: dept, updated_at: new Date().toISOString() };
-    if (existing) toUpdate.push(empRow);
-    else          toInsert.push({ ...empRow, created_at: new Date().toISOString() });
-
-    CERT_TYPES.forEach(t => {
-      const dt = parseDate(get(`${t}issuedate`));
-      if (dt) certRows.push({ employee_id: id, type: t, issue_date: dt, expiry_date: calcExpiry(dt, CERTIFICATES[t].validYears), updated_at: new Date().toISOString() });
-    });
+    const createdAt = existing?.createdAt || new Date().toISOString();
+    const empRow = { name, employee_id: empId, department: dept, market: MARKET, created_at: createdAt, updated_at: new Date().toISOString() };
+    empMap.set(empId.toLowerCase(), { empRow, fhDate, faDate, fsDate, isNew: !existing });
   }
-
-  const total = toInsert.length + toUpdate.length;
-  if (total === 0) return { added: 0, updated: 0, skipped };
-
-  // ── Step 2: Batch upsert employees (single DB call) ──────────────────────────
-  showProgressToast(`Writing ${total} employees to database…`, 30);
-  const allEmpRows = [...toInsert, ...toUpdate];
-  const BATCH = 200; // Supabase handles up to ~500 rows per upsert safely
-  for (let i = 0; i < allEmpRows.length; i += BATCH) {
-    const chunk = allEmpRows.slice(i, i + BATCH);
-    const pct = 30 + Math.round((i / allEmpRows.length) * 40);
-    showProgressToast(`Writing employees ${i + 1}–${Math.min(i + BATCH, allEmpRows.length)} of ${allEmpRows.length}…`, pct);
-    const { error } = await sb.from("employees").upsert(chunk, { onConflict: "id" });
-    if (error) throw new Error(`Employee upsert failed: ${error.message}`);
+  const allEntries = [...empMap.values()];
+  if (!allEntries.length) return { added: 0, updated: 0, skipped };
+  allEntries.forEach(e => e.isNew ? addedCount++ : updatedCount++);
+  const BATCH = 200, empIdToDbId = {};
+  showProgressToast("Writing " + allEntries.length + " employees...", 30);
+  for (let i = 0; i < allEntries.length; i += BATCH) {
+    const chunk = allEntries.slice(i, i + BATCH).map(e => e.empRow);
+    const pct = 30 + Math.round((i / allEntries.length) * 40);
+    showProgressToast("Writing employees " + (i+1) + "-" + Math.min(i+BATCH,allEntries.length) + " of " + allEntries.length + "...", pct);
+    const { data: upserted, error } = await sb.from("employees")
+      .upsert(chunk, { onConflict: "employee_id" }).select("id, employee_id");
+    if (error) throw new Error("Employee upsert failed: " + error.message);
+    (upserted || []).forEach(r => { empIdToDbId[r.employee_id.toLowerCase()] = r.id; });
   }
-
-  // ── Step 3: Batch upsert certificates (single DB call) ───────────────────────
+  const certRows = [];
+  for (const { empRow, fhDate, faDate, fsDate } of allEntries) {
+    const realId = empIdToDbId[empRow.employee_id.toLowerCase()];
+    if (!realId) continue;
+    if (fhDate) certRows.push({ employee_id: realId, type: "fh", market: MARKET, issue_date: fhDate, expiry_date: calcExpiry(fhDate, 1), updated_at: new Date().toISOString() });
+    if (faDate) certRows.push({ employee_id: realId, type: "fa", market: MARKET, issue_date: faDate, expiry_date: calcExpiry(faDate, 1), updated_at: new Date().toISOString() });
+    if (fsDate) certRows.push({ employee_id: realId, type: "fs", market: MARKET, issue_date: fsDate, expiry_date: calcExpiry(fsDate, 1), updated_at: new Date().toISOString() });
+  }
   if (certRows.length > 0) {
-    showProgressToast(`Writing ${certRows.length} certificate records…`, 75);
+    showProgressToast("Writing " + certRows.length + " certificate records...", 75);
     for (let i = 0; i < certRows.length; i += BATCH) {
-      const chunk = certRows.slice(i, i + BATCH);
-      const { error } = await sb.from("certificates").upsert(chunk, { onConflict: "employee_id,type" });
-      if (error) throw new Error(`Certificate upsert failed: ${error.message}`);
+      const { error } = await sb.from("certificates").upsert(certRows.slice(i, i+BATCH), { onConflict: "employee_id,type" });
+      if (error) throw new Error("Certificate upsert failed: " + error.message);
     }
   }
-
-  // ── Step 4: Reload state from DB (source of truth) ───────────────────────────
-  showProgressToast("Reloading data…", 90);
+  showProgressToast("Reloading data...", 90);
   await loadFromSupabase();
   setSyncState("idle");
-
-  return { added: toInsert.length, updated: toUpdate.length, skipped };
+  return { added: addedCount, updated: updatedCount, skipped };
 }
+
 function downloadTemplate(type) {
-  const cols = ["employeeId","name","department",`${type}IssueDate`];
-  const ex   = ["CK-1001","Sample Employee","Kitchen","2026-01-15"];
-  downloadFile(`uae-kitchen-${type}-template-${today()}.csv`,[cols,ex].map(r=>r.map(csvEsc).join(",")).join("\n"),"text/csv;charset=utf-8");
+  const cols = ["employeeId","name","department","fhIssueDate","faIssueDate","fsIssueDate"];
+  const ex   = ["QAT-1001","Sample Employee","Kitchen","2026-01-15","2026-02-10","2026-03-20"];
+  downloadFile("qatar-certs-template-" + today() + ".csv",
+    [cols,ex].map(r=>r.map(csvEsc).join(",")).join("\n"), "text/csv;charset=utf-8;");
 }
 
 // ── PDF export ─────────────────────────────────────────────────────────────────
